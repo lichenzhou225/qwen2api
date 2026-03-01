@@ -1,7 +1,6 @@
 const handler = require('../index.js');
 
 exports.handler = async (event, context) => {
-  // 转换 Netlify 事件格式为标准格式
   const req = {
     method: event.httpMethod,
     headers: event.headers || {},
@@ -11,44 +10,17 @@ exports.handler = async (event, context) => {
     query: event.queryStringParameters || {},
   };
 
-  // 创建响应对象
   let responseResult = null;
   const res = {
     status: (code) => ({
       set: (headers) => ({
-        send: (body) => {
-          responseResult = { statusCode: code, headers, body };
-          return responseResult;
-        },
-        json: (body) => {
-          responseResult = { statusCode: code, headers, body: JSON.stringify(body) };
-          return responseResult;
-        },
-        end: () => {
-          responseResult = { statusCode: code, headers: {}, body: '' };
-          return responseResult;
-        }
+        send: (body) => { responseResult = { statusCode: code, headers, body }; return responseResult; },
+        end: () => { responseResult = { statusCode: code, headers: {}, body: '' }; return responseResult; }
       }),
-      json: (body) => {
-        responseResult = { statusCode: code, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
-        return responseResult;
-      },
-      send: (body) => {
-        responseResult = { statusCode: code, headers: { 'Content-Type': 'text/html' }, body };
-        return responseResult;
-      }
-    }),
-    set: (headers) => ({
-      send: (body) => {
-        responseResult = { statusCode: 200, headers, body };
-        return responseResult;
-      }
+      json: (body) => { responseResult = { statusCode: code, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }; return responseResult; }
     })
   };
 
-  // 调用 handler
   await handler(req, res);
-
-  // 返回 Netlify 格式响应
   return responseResult || { statusCode: 404, body: 'Not Found' };
 };

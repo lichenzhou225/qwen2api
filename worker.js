@@ -7,10 +7,8 @@
  * 3. 部署: wrangler deploy
  */
 
-import { v4 as uuidv4 } from 'uuid';
-
 // ============================================
-// Baxia Token 生成 (Cloudflare Workers 版本)
+// Baxia Token 生成 (CF Worker 内联版本)
 // ============================================
 
 const BAXIA_VERSION = '2.5.36';
@@ -32,10 +30,7 @@ function generateWebGLFingerprint() {
     'ANGLE (NVIDIA, NVIDIA GeForce GTX 1080, OpenGL 4.6)',
     'ANGLE (AMD, AMD Radeon RX 580, OpenGL 4.6)',
   ];
-  return {
-    renderer: renderers[Math.floor(Math.random() * renderers.length)],
-    vendor: 'Google Inc. (Intel)',
-  };
+  return { renderer: renderers[Math.floor(Math.random() * renderers.length)], vendor: 'Google Inc. (Intel)' };
 }
 
 async function generateCanvasFingerprint() {
@@ -46,344 +41,202 @@ async function generateCanvasFingerprint() {
   return btoa(String.fromCharCode(...hashArray)).substring(0, 32);
 }
 
-async function generateBrowserFeatures() {
+async function collectFingerprintData() {
   const platforms = ['Win32', 'Linux x86_64', 'MacIntel'];
   const languages = ['en-US', 'zh-CN', 'en-GB'];
-  const timezones = [-480, -300, 0, 60, 480];
-  
   const canvas = await generateCanvasFingerprint();
   
   return {
-    platform: platforms[Math.floor(Math.random() * platforms.length)],
-    language: languages[Math.floor(Math.random() * languages.length)],
-    hardwareConcurrency: 4 + Math.floor(Math.random() * 12),
-    deviceMemory: [4, 8, 16, 32][Math.floor(Math.random() * 4)],
-    timezoneOffset: timezones[Math.floor(Math.random() * timezones.length)],
-    screenWidth: 1920 + Math.floor(Math.random() * 200),
-    screenHeight: 1080 + Math.floor(Math.random() * 100),
-    colorDepth: 24,
-    pixelRatio: [1, 1.25, 1.5, 2][Math.floor(Math.random() * 4)],
-    webGL: generateWebGLFingerprint(),
-    canvas: canvas,
-    audio: (124.04347527516074 + Math.random() * 0.001).toFixed(14),
-  };
-}
-
-async function collectFingerprintData() {
-  const features = await generateBrowserFeatures();
-  return {
-    p: features.platform,
-    l: features.language,
-    hc: features.hardwareConcurrency,
-    dm: features.deviceMemory,
-    to: features.timezoneOffset,
-    sw: features.screenWidth,
-    sh: features.screenHeight,
-    cd: features.colorDepth,
-    pr: features.pixelRatio,
-    wf: features.webGL.renderer.substring(0, 20),
-    cf: features.canvas,
-    af: features.audio,
+    p: platforms[Math.floor(Math.random() * platforms.length)],
+    l: languages[Math.floor(Math.random() * languages.length)],
+    hc: 4 + Math.floor(Math.random() * 12),
+    dm: [4, 8, 16, 32][Math.floor(Math.random() * 4)],
+    to: [-480, -300, 0, 60, 480][Math.floor(Math.random() * 5)],
+    sw: 1920 + Math.floor(Math.random() * 200),
+    sh: 1080 + Math.floor(Math.random() * 100),
+    cd: 24,
+    pr: [1, 1.25, 1.5, 2][Math.floor(Math.random() * 4)],
+    wf: generateWebGLFingerprint().renderer.substring(0, 20),
+    cf: canvas,
+    af: (124.04347527516074 + Math.random() * 0.001).toFixed(14),
     ts: Date.now(),
     r: Math.random(),
   };
 }
 
 function encodeBaxiaToken(data) {
-  const jsonStr = JSON.stringify(data);
-  const encoded = btoa(unescape(encodeURIComponent(jsonStr)));
-  return `${BAXIA_VERSION.replace(/\./g, '')}!${encoded}`;
-}
-
-async function generateBxUa() {
-  const data = await collectFingerprintData();
-  return encodeBaxiaToken(data);
-}
-
-async function generateBxUmidToken() {
-  try {
-    const response = await fetch('https://sg-wum.alibaba.com/w/wu.json', {
-      method: 'GET',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': '*/*',
-      }
-    });
-    const etag = response.headers.get('etag');
-    return etag || 'T2gA' + randomString(40);
-  } catch (e) {
-    return 'T2gA' + randomString(40);
-  }
+  return `${BAXIA_VERSION.replace(/\./g, '')}!${btoa(unescape(encodeURIComponent(JSON.stringify(data))))}`;
 }
 
 async function getBaxiaTokens() {
-  const bxUa = await generateBxUa();
-  const bxUmidToken = await generateBxUmidToken();
+  const bxUa = encodeBaxiaToken(await collectFingerprintData());
+  let bxUmidToken;
+  try {
+    const resp = await fetch('https://sg-wum.alibaba.com/w/wu.json', {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+    });
+    bxUmidToken = resp.headers.get('etag') || 'T2gA' + randomString(40);
+  } catch { bxUmidToken = 'T2gA' + randomString(40); }
   return { bxUa, bxUmidToken, bxV: BAXIA_VERSION };
 }
 
 // ============================================
-// API Token 验证
+// UUID 生成
 // ============================================
 
-const API_TOKENS = (typeof env !== 'undefined' && env.API_TOKENS) 
-  ? env.API_TOKENS.split(',').filter(t => t.trim())
-  : [];
+function uuidv4() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = Math.random() * 16 | 0;
+    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+  });
+}
 
-function validateToken(authHeader) {
-  if (API_TOKENS.length === 0) return true;
-  const token = authHeader && authHeader.startsWith('Bearer ') 
-    ? authHeader.slice(7).trim() 
-    : '';
-  return API_TOKENS.includes(token);
+// ============================================
+// 响应工具
+// ============================================
+
+function jsonResponse(body, status = 200, extraHeaders = {}) {
+  return new Response(typeof body === 'string' ? body : JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...extraHeaders }
+  });
+}
+
+function streamResponse(body) {
+  return new Response(body, {
+    headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Access-Control-Allow-Origin': '*' }
+  });
+}
+
+// ============================================
+// 认证
+// ============================================
+
+function validateToken(authHeader, env) {
+  const tokens = env.API_TOKENS ? env.API_TOKENS.split(',').filter(t => t.trim()) : [];
+  if (tokens.length === 0) return true;
+  const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+  return tokens.includes(token);
 }
 
 // ============================================
 // API Handlers
 // ============================================
 
-async function handleModels(authHeader) {
-  if (!validateToken(authHeader)) {
-    return new Response(JSON.stringify({ error: { message: 'Incorrect API key provided.', type: 'invalid_request_error' } }), {
-      status: 401,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-    });
+async function handleModels(authHeader, env) {
+  if (!validateToken(authHeader, env)) {
+    return jsonResponse({ error: { message: 'Incorrect API key provided.', type: 'invalid_request_error' } }, 401);
   }
-
   try {
-    const response = await fetch('https://chat.qwen.ai/api/models', {
-      method: 'GET',
-      headers: {
-        'Accept': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      },
+    const resp = await fetch('https://chat.qwen.ai/api/models', {
+      headers: { 'Accept': 'application/json', 'User-Agent': 'Mozilla/5.0' }
     });
-    const data = await response.json();
-    return new Response(JSON.stringify(data), {
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-    });
-  } catch (error) {
-    return new Response(JSON.stringify({ error: { message: 'Failed to fetch models', type: 'api_error' } }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-    });
+    return jsonResponse(await resp.json());
+  } catch {
+    return jsonResponse({ error: { message: 'Failed to fetch models', type: 'api_error' } }, 500);
   }
 }
 
-async function handleChatCompletions(body, authHeader) {
-  if (!validateToken(authHeader)) {
-    return new Response(JSON.stringify({ error: { message: 'Incorrect API key provided.', type: 'invalid_request_error' } }), {
-      status: 401,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-    });
+async function handleChatCompletions(body, authHeader, env) {
+  if (!validateToken(authHeader, env)) {
+    return jsonResponse({ error: { message: 'Incorrect API key provided.', type: 'invalid_request_error' } }, 401);
   }
 
-  const startTime = Date.now();
-  
-  try {
-    const { model, messages, stream = true } = body;
+  const { model, messages, stream = true } = body;
+  if (!messages?.length) {
+    return jsonResponse({ error: { message: 'Messages are required' } }, 400);
+  }
 
-    if (!messages || !Array.isArray(messages) || messages.length === 0) {
-      return new Response(JSON.stringify({ error: { message: 'Messages are required' } }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-      });
-    }
+  const actualModel = model || 'qwen3.5-plus';
+  const { bxUa, bxUmidToken, bxV } = await getBaxiaTokens();
 
-    const actualModel = model || 'qwen3.5-plus';
-    const lastUserMessage = messages.filter(m => m.role === 'user').pop();
-    const userContent = lastUserMessage ? lastUserMessage.content : 'hello';
-    
-    const { bxUa, bxUmidToken, bxV } = await getBaxiaTokens();
-    
-    // 创建 chat 会话
-    const createChatBody = {
-      title: '新建对话',
-      models: [actualModel],
-      chat_mode: 'guest',
-      chat_type: 't2t',
-      timestamp: Date.now(),
-      project_id: '',
-    };
-    
-    const createHeaders = {
-      'Accept': 'application/json, text/plain, */*',
-      'Content-Type': 'application/json',
-      'bx-ua': bxUa,
-      'bx-umidtoken': bxUmidToken,
-      'bx-v': bxV,
-      'Referer': 'https://chat.qwen.ai/c/guest',
-      'source': 'web',
-      'x-request-id': uuidv4(),
-    };
-    
-    const createResp = await fetch('https://chat.qwen.ai/api/v2/chats/new', {
-      method: 'POST',
-      headers: createHeaders,
-      body: JSON.stringify(createChatBody),
-    });
-    
-    const createData = await createResp.json();
-    
-    if (!createData.success || !createData.data?.id) {
-      return new Response(JSON.stringify({ error: { message: 'Failed to create chat session' } }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-      });
-    }
-    
-    const chatId = createData.data.id;
-    
-    // 合并多轮对话
-    let combinedContent = '';
-    if (messages.length > 1) {
-      const historyParts = [];
-      for (let i = 0; i < messages.length - 1; i++) {
-        const msg = messages[i];
-        const roleLabel = msg.role === 'user' ? 'User' : 'Assistant';
-        historyParts.push(`[${roleLabel}]: ${msg.content}`);
-      }
-      combinedContent = historyParts.join('\n\n') + '\n\n[User]: ' + messages[messages.length - 1].content;
-    } else {
-      combinedContent = userContent;
-    }
-    
-    const fid = uuidv4();
-    const responseFid = uuidv4();
-    
-    const requestBody = {
-      stream: true,
-      version: '2.1',
-      incremental_output: true,
-      chat_id: chatId,
-      chat_mode: 'guest',
-      model: actualModel,
-      parent_id: null,
-      messages: [{
-        fid: fid,
-        parentId: null,
-        childrenIds: [responseFid],
-        role: 'user',
-        content: combinedContent,
-        user_action: 'chat',
-        files: [],
-        timestamp: Date.now(),
-        models: [actualModel],
-        chat_type: 't2t',
-        feature_config: {
-          thinking_enabled: true,
-          output_schema: 'phase',
-          research_mode: 'normal',
-          auto_thinking: true,
-          thinking_format: 'summary',
-          auto_search: true,
-        },
-        extra: { meta: { subChatType: 't2t' } },
-        sub_chat_type: 't2t',
-        parent_id: null,
-      }],
-      timestamp: Date.now(),
-    };
-    
-    const headers = {
+  // 创建会话
+  const createResp = await fetch('https://chat.qwen.ai/api/v2/chats/new', {
+    method: 'POST',
+    headers: {
       'Accept': 'application/json',
-      'bx-ua': bxUa,
-      'bx-umidtoken': bxUmidToken,
-      'bx-v': bxV,
       'Content-Type': 'application/json',
-      'source': 'web',
-      'version': '0.2.9',
-      'x-request-id': uuidv4(),
-      'Referer': 'https://chat.qwen.ai/c/guest',
-    };
-    
-    const response = await fetch(`https://chat.qwen.ai/api/v2/chat/completions?chat_id=${chatId}`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(requestBody),
-    });
-    
-    if (!response.ok) {
-      const errorText = await response.text();
-      return new Response(JSON.stringify({ error: { message: errorText } }), {
-        status: response.status,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-      });
-    }
-
-    // 收集完整响应
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let contentChunks = [];
-    const responseId = `chatcmpl-${uuidv4()}`;
-    const created = Math.floor(Date.now() / 1000);
-    
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-    }
-    
-    const lines = buffer.split('\n');
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) continue;
-      const data = line.slice(6).trim();
-      if (data === '[DONE]') continue;
-      
-      try {
-        const parsed = JSON.parse(data);
-        if (parsed.choices && parsed.choices[0]?.delta?.content) {
-          contentChunks.push(parsed.choices[0].delta.content);
-        }
-      } catch (e) {}
-    }
-
-    if (stream) {
-      const streamBody = contentChunks.map((content, i) => {
-        return `data: ${JSON.stringify({
-          id: responseId,
-          object: 'chat.completion.chunk',
-          created: created,
-          model: actualModel,
-          choices: [{
-            index: 0,
-            delta: { content: content },
-            finish_reason: i === contentChunks.length - 1 ? 'stop' : null,
-          }],
-        })}\n\n`;
-      }).join('') + 'data: [DONE]\n\n';
-      
-      return new Response(streamBody, {
-        headers: { 
-          'Content-Type': 'text/event-stream', 
-          'Cache-Control': 'no-cache',
-          'Access-Control-Allow-Origin': '*' 
-        }
-      });
-    } else {
-      const openAI = {
-        id: responseId,
-        object: 'chat.completion',
-        created: created,
-        model: actualModel,
-        choices: [{
-          index: 0,
-          message: { role: 'assistant', content: contentChunks.join('') },
-          finish_reason: 'stop',
-        }],
-        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-      };
-      return new Response(JSON.stringify(openAI), {
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-      });
-    }
-  } catch (error) {
-    return new Response(JSON.stringify({ error: { message: error.message } }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-    });
+      'bx-ua': bxUa, 'bx-umidtoken': bxUmidToken, 'bx-v': bxV,
+      'Referer': 'https://chat.qwen.ai/c/guest', 'source': 'web',
+      'x-request-id': uuidv4()
+    },
+    body: JSON.stringify({
+      title: '新建对话', models: [actualModel], chat_mode: 'guest', chat_type: 't2t',
+      timestamp: Date.now(), project_id: ''
+    })
+  });
+  const createData = await createResp.json();
+  if (!createData.success?.data?.id) {
+    return jsonResponse({ error: { message: 'Failed to create chat session' } }, 500);
   }
+  const chatId = createData.data.id;
+
+  // 合并消息
+  let content = messages.length === 1 
+    ? messages[0].content 
+    : messages.slice(0, -1).map(m => `[${m.role === 'user' ? 'User' : 'Assistant'}]: ${m.content}`).join('\n\n') 
+      + '\n\n[User]: ' + messages[messages.length - 1].content;
+
+  // 发送请求
+  const chatResp = await fetch(`https://chat.qwen.ai/api/v2/chat/completions?chat_id=${chatId}`, {
+    method: 'POST',
+    headers: {
+      'Accept': 'application/json', 'Content-Type': 'application/json',
+      'bx-ua': bxUa, 'bx-umidtoken': bxUmidToken, 'bx-v': bxV,
+      'source': 'web', 'version': '0.2.9', 'Referer': 'https://chat.qwen.ai/c/guest', 'x-request-id': uuidv4()
+    },
+    body: JSON.stringify({
+      stream: true, version: '2.1', incremental_output: true,
+      chat_id: chatId, chat_mode: 'guest', model: actualModel, parent_id: null,
+      messages: [{
+        fid: uuidv4(), parentId: null, childrenIds: [uuidv4()], role: 'user', content,
+        user_action: 'chat', files: [], timestamp: Date.now(), models: [actualModel], chat_type: 't2t',
+        feature_config: { thinking_enabled: true, output_schema: 'phase', research_mode: 'normal', auto_thinking: true, thinking_format: 'summary', auto_search: true },
+        extra: { meta: { subChatType: 't2t' } }, sub_chat_type: 't2t', parent_id: null
+      }],
+      timestamp: Date.now()
+    })
+  });
+
+  if (!chatResp.ok) {
+    return jsonResponse({ error: { message: await chatResp.text() } }, chatResp.status);
+  }
+
+  // 收集响应
+  const reader = chatResp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '', chunks = [];
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+  }
+  for (const line of buffer.split('\n')) {
+    if (!line.startsWith('data: ')) continue;
+    const data = line.slice(6).trim();
+    if (data === '[DONE]') continue;
+    try {
+      const parsed = JSON.parse(data);
+      if (parsed.choices?.[0]?.delta?.content) chunks.push(parsed.choices[0].delta.content);
+    } catch {}
+  }
+
+  const responseId = `chatcmpl-${uuidv4()}`;
+  const created = Math.floor(Date.now() / 1000);
+
+  if (stream) {
+    const streamBody = chunks.map((c, i) => `data: ${JSON.stringify({
+      id: responseId, object: 'chat.completion.chunk', created, model: actualModel,
+      choices: [{ index: 0, delta: { content: c }, finish_reason: i === chunks.length - 1 ? 'stop' : null }]
+    })}\n\n`).join('') + 'data: [DONE]\n\n';
+    return streamResponse(streamBody);
+  }
+
+  return jsonResponse({
+    id: responseId, object: 'chat.completion', created, model: actualModel,
+    choices: [{ index: 0, message: { role: 'assistant', content: chunks.join('') }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+  });
 }
 
 // ============================================
@@ -392,14 +245,9 @@ async function handleChatCompletions(body, authHeader) {
 
 export default {
   async fetch(request, env, ctx) {
-    // 处理 CORS preflight
     if (request.method === 'OPTIONS') {
       return new Response(null, {
-        headers: {
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-        }
+        headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization' }
       });
     }
 
@@ -407,27 +255,15 @@ export default {
     const path = url.pathname;
     const authHeader = request.headers.get('Authorization') || '';
 
-    // 模型列表
     if (request.method === 'GET' && path.includes('/v1/models')) {
-      return handleModels(authHeader);
+      return handleModels(authHeader, env);
     }
-
-    // 聊天完成
     if (request.method === 'POST' && path.includes('/v1/chat/completions')) {
-      const body = await request.json();
-      return handleChatCompletions(body, authHeader);
+      return handleChatCompletions(await request.json(), authHeader, env);
     }
-
-    // 根路径
     if (request.method === 'GET' && (path === '/' || path === '')) {
-      return new Response('<html>\n<head><title>200 OK</title></head>\n<body>\n<center><h1>200 OK</h1></center>\n<hr><center>nginx</center>\n</body>\n</html>\n', {
-        headers: { 'Content-Type': 'text/html' }
-      });
+      return new Response('<html><head><title>200 OK</title></head><body><center><h1>200 OK</h1></center><hr><center>nginx</center></body></html>', { headers: { 'Content-Type': 'text/html' } });
     }
-
-    return new Response(JSON.stringify({ error: { message: 'Not found' } }), {
-      status: 404,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-    });
+    return jsonResponse({ error: { message: 'Not found' } }, 404);
   }
 };
