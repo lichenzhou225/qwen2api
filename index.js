@@ -167,6 +167,21 @@ app.post('/v1/chat/completions', async (req, res) => {
     const chatId = createData.data.id;
     console.log('[API] Created chat with id:', chatId);
     
+    // 将多轮对话合并成一个消息
+    let combinedContent = '';
+    if (messages.length > 1) {
+      // 多轮对话：把历史对话格式化到一个 content 中
+      const historyParts = [];
+      for (let i = 0; i < messages.length - 1; i++) {
+        const msg = messages[i];
+        const roleLabel = msg.role === 'user' ? 'User' : 'Assistant';
+        historyParts.push(`[${roleLabel}]: ${msg.content}`);
+      }
+      combinedContent = historyParts.join('\n\n') + '\n\n[User]: ' + messages[messages.length - 1].content;
+    } else {
+      combinedContent = userContent;
+    }
+    
     const fid = uuidv4();
     const responseFid = uuidv4();
     
@@ -183,7 +198,7 @@ app.post('/v1/chat/completions', async (req, res) => {
         parentId: null,
         childrenIds: [responseFid],
         role: 'user',
-        content: userContent,
+        content: combinedContent,
         user_action: 'chat',
         files: [],
         timestamp: Date.now(),
