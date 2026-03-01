@@ -1,26 +1,27 @@
-const handler = require('../index.js');
+/**
+ * Netlify Functions 入口
+ */
+
+const { handleModels, handleChatCompletions, handleRoot, createResponse } = require('../../core.js');
 
 exports.handler = async (event, context) => {
-  const req = {
-    method: event.httpMethod,
-    headers: event.headers || {},
-    body: event.body ? (event.isBase64Encoded ? Buffer.from(event.body, 'base64').toString() : event.body) : {},
-    url: event.path,
-    path: event.path,
-    query: event.queryStringParameters || {},
-  };
+  if (event.httpMethod === 'OPTIONS') {
+    return { statusCode: 200, headers: { 'Access-Control-Allow-Origin': '*' }, body: '' };
+  }
 
-  let responseResult = null;
-  const res = {
-    status: (code) => ({
-      set: (headers) => ({
-        send: (body) => { responseResult = { statusCode: code, headers, body }; return responseResult; },
-        end: () => { responseResult = { statusCode: code, headers: {}, body: '' }; return responseResult; }
-      }),
-      json: (body) => { responseResult = { statusCode: code, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }; return responseResult; }
-    })
-  };
+  const authHeader = event.headers?.authorization || event.headers?.Authorization || '';
+  const path = event.path || '';
 
-  await handler(req, res);
-  return responseResult || { statusCode: 404, body: 'Not Found' };
+  if (event.httpMethod === 'GET' && path.includes('/v1/models')) {
+    return handleModels(authHeader);
+  }
+  if (event.httpMethod === 'POST' && path.includes('/v1/chat/completions')) {
+    const body = typeof event.body === 'string' ? JSON.parse(event.body) : event.body;
+    return handleChatCompletions(body, authHeader);
+  }
+  if (event.httpMethod === 'GET' && (path === '/' || path === '')) {
+    return handleRoot();
+  }
+  
+  return createResponse({ error: { message: 'Not found' } }, 404);
 };

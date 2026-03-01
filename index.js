@@ -4,13 +4,60 @@
  * 支持: Docker (Express) / Vercel / Netlify
  */
 
-const { handleModels, handleChatCompletions, handleRoot, createExpressStreamHandler, createResponse } = require('./lib/qwen');
+const { handleModels, handleChatCompletions, handleRoot, createResponse, validateToken, uuidv4 } = require('./core.js');
+
+// ============================================
+// Express Stream Handler
+// ============================================
+
+function createExpressStreamHandler(res) {
+  return async (response, model, responseId, created) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6).trim();
+        if (data === '[DONE]') {
+          res.write('data: [DONE]\n\n');
+          continue;
+        }
+        
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed.choices?.[0]?.delta?.content) {
+            const chunk = {
+              id: responseId, object: 'chat.completion.chunk', created, model,
+              choices: [{ index: 0, delta: { content: parsed.choices[0].delta.content }, finish_reason: parsed.choices[0].finish_reason || null }]
+            };
+            res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+          }
+        } catch {}
+      }
+    }
+    res.write('data: [DONE]\n\n');
+    res.end();
+  };
+}
 
 // ============================================
 // Serverless Handler (Vercel / Netlify)
 // ============================================
+
 async function serverlessHandler(req, res) {
-  // 处理 CORS preflight
   if (req.method === 'OPTIONS') {
     return res ? res.status(200).end() : createResponse('', 200);
   }
@@ -18,14 +65,12 @@ async function serverlessHandler(req, res) {
   const authHeader = req.headers?.authorization || req.headers?.Authorization || '';
   const path = req.url || req.path || '';
   
-  // 模型列表
   if (req.method === 'GET' && path.includes('/v1/models')) {
     const result = await handleModels(authHeader);
     if (res) return res.status(result.statusCode).set(result.headers).send(result.body);
     return result;
   }
   
-  // 聊天完成
   if (req.method === 'POST' && path.includes('/v1/chat/completions')) {
     const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
     const result = await handleChatCompletions(body, authHeader);
@@ -33,69 +78,48 @@ async function serverlessHandler(req, res) {
     return result;
   }
   
-  // 根路径
   if (req.method === 'GET' && (path === '/' || path.endsWith('/'))) {
     const result = handleRoot();
     if (res) return res.status(200).set(result.headers).send(result.body);
     return result;
   }
   
-  // 404
-  const notFound = { error: { message: 'Not found', type: 'not_found' } };
-  if (res) return res.status(404).json(notFound);
-  return createResponse(notFound, 404);
+  return res ? res.status(404).json({ error: { message: 'Not found' } }) : createResponse({ error: { message: 'Not found' } }, 404);
 }
 
 // ============================================
 // Express Server (Docker / 本地开发)
 // ============================================
+
 function startExpressServer() {
   const express = require('express');
-  const { getApiTokens } = require('./lib/config');
-  
   const app = express();
   app.use(express.json());
 
   // Token 验证中间件
   function authMiddleware(req, res, next) {
-    const tokens = getApiTokens();
-    if (tokens.length === 0) return next();
-    
-    const authHeader = req.headers.authorization || '';
-    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
-    
-    if (!token || !tokens.includes(token)) {
-      return res.status(401).json({
-        error: { message: 'Incorrect API key provided.', type: 'invalid_request_error', code: 'invalid_api_key' }
-      });
+    if (!validateToken(req.headers.authorization)) {
+      return res.status(401).json({ error: { message: 'Incorrect API key provided.', type: 'invalid_request_error' } });
     }
     next();
   }
 
-  // 模型列表
   app.get('/v1/models', authMiddleware, async (req, res) => {
     const result = await handleModels(req.headers.authorization);
     res.status(result.statusCode).set(result.headers).send(result.body);
   });
 
-  // 聊天完成 (支持真正的流式)
   app.post('/v1/chat/completions', authMiddleware, async (req, res) => {
-    const streamHandler = createExpressStreamHandler(res);
-    await handleChatCompletions(req.body, req.headers.authorization, { streamHandler });
+    await handleChatCompletions(req.body, req.headers.authorization, null, createExpressStreamHandler(res));
   });
 
-  // 根路径
   app.get('/', (req, res) => {
     const result = handleRoot();
     res.status(200).set(result.headers).send(result.body);
   });
 
   const PORT = process.env.PORT || 8765;
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Qwen2API server running on port ${PORT}`);
-  }).on('error', (err) => {
-    console.error('Server error:', err);
-  });
+  app.listen(PORT, '0.0.0.0', () => console.log(`Qwen2API server running on port ${PORT}`));
 }
 
 // ============================================
@@ -108,12 +132,7 @@ module.exports.handleChatCompletions = handleChatCompletions;
 module.exports.handleRoot = handleRoot;
 module.exports.createResponse = createResponse;
 
-// 判断运行环境
-const isVercel = process.env.VERCEL === '1';
-const isNetlify = process.env.NETLIFY === 'true';
-const isServerless = isVercel || isNetlify;
-
-// 如果不是 serverless 环境，启动 Express 服务器
+const isServerless = process.env.VERCEL === '1' || process.env.NETLIFY === 'true';
 if (!isServerless && require.main === module) {
   startExpressServer();
 }
