@@ -28,24 +28,23 @@ function randomString(length) {
 }
 
 function cryptoRandomBytes(length) {
-  // Cloudflare Workers
-  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
-    const bytes = new Uint8Array(length);
-    crypto.getRandomValues(bytes);
-    return bytes;
+  // Node.js 环境 (包括 Vercel/Netlify)
+  if (typeof process !== 'undefined' && process.versions && process.versions.node) {
+    return require('crypto').randomBytes(length);
   }
-  // Node.js
-  return require('crypto').randomBytes(length);
+  // Cloudflare Workers / 浏览器
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  return bytes;
 }
 
 function cryptoHash(data) {
-  // Cloudflare Workers
-  if (typeof Buffer === 'undefined') {
-    // 简化处理，返回随机字符串
-    return randomString(32);
+  // Node.js 环境 (包括 Vercel/Netlify)
+  if (typeof process !== 'undefined' && process.versions && process.versions.node) {
+    return require('crypto').createHash('md5').update(data).digest('base64').substring(0, 32);
   }
-  // Node.js
-  return require('crypto').createHash('md5').update(data).digest('base64').substring(0, 32);
+  // Cloudflare Workers / 浏览器 - 返回随机字符串
+  return randomString(32);
 }
 
 function generateWebGLFingerprint() {
