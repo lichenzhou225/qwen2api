@@ -151,7 +151,7 @@ function handleChatPage() {
   <script>
     (function () {
       var MAX = 5;
-      var MAX_SIZE = 10 * 1024 * 1024;
+      var MAX_SIZE = 100 * 1024 * 1024;
       var KEY = 'qwen2api.chat.history.v1';
       var state = { hist: [], files: [], ac: null };
       var e = {
