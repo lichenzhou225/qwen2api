@@ -5,8 +5,8 @@ npm-debug.log
 .env
 .npm
 .eslint*
-.prettier*
-.vscode
+prettier*
+vscode
 .idea
 wrangler.toml
 netlify
