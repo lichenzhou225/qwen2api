@@ -916,8 +916,9 @@ async function handleChatCompletions(body, authHeader, env, streamWriter) {
   });
 
   if (!chatResp.ok) {
-    logChatDetail('core', 'chat.completion.error', { status: chatResp.status, chatId });
-    return createResponse({ error: { message: await chatResp.text(), type: 'api_error' } }, chatResp.status);
+    const errorText = await chatResp.text().catch(() => '');
+    logChatDetail('core', 'chat.completion.error', { status: chatResp.status, chatId, error: errorText });
+    return createResponse({ error: { message: errorText || `HTTP ${chatResp.status}`, type: 'api_error' } }, chatResp.status);
   }
   logChatDetail('core', 'chat.completion.started', { status: chatResp.status, chatId, stream: !!stream });
 
@@ -1010,7 +1011,7 @@ async function downloadVideoWithYtDlp(videoUrl, sendLog) {
   const os = require('os');
 
   // 从环境变量获取最低分辨率，默认 480p
-  const minResolution = parseInt(process.env.MIN_VIDEO_RESOLUTION || '1080', 10);
+  const minResolution = parseInt(process.env.MIN_VIDEO_RESOLUTION || '480', 10);
 
   return new Promise((resolve, reject) => {
     const tmpDir = path.join(os.tmpdir(), 'qwen2api_videos');
@@ -1195,13 +1196,21 @@ function createLogStreamWriter(writer, onDone = null) {
 }
 
 async function handleChatCompletionsWithLogs(body, authHeader, env, streamWriter) {
+  logChatDetail('core', 'request.entry', {
+    hasAuthHeader: !!authHeader,
+    bodyType: typeof body,
+    hasMessages: !!body?.messages,
+  });
+
   // 验证 token
   if (!validateToken(authHeader, env)) {
+    logChatDetail('core', 'request.auth.failed', {});
     return createResponse({ error: { message: 'Incorrect API key provided.', type: 'invalid_request_error' } }, 401);
   }
 
   const { model, messages, stream = true } = body;
   if (!messages?.length) {
+    logChatDetail('core', 'request.validation.failed', { reason: 'Messages are required' });
     return createResponse({ error: { message: 'Messages are required', type: 'invalid_request_error' } }, 400);
   }
 
@@ -1213,6 +1222,11 @@ async function handleChatCompletionsWithLogs(body, authHeader, env, streamWriter
     }
   };
 
+  logChatDetail('core', 'request.received', {
+    stream: !!stream,
+    model: model || 'qwen3.5-plus',
+    messageCount: Array.isArray(messages) ? messages.length : 0,
+  });
   sendLog('request.received', { model: model || 'qwen3.5-plus', messageCount: messages.length });
 
   const actualModel = model || 'qwen3.5-plus';
@@ -1221,6 +1235,7 @@ async function handleChatCompletionsWithLogs(body, authHeader, env, streamWriter
   // 检查是否启用搜索
   const enableSearch = (env?.ENABLE_SEARCH || process?.env?.ENABLE_SEARCH || '').toLowerCase() === 'true';
   const chatType = enableSearch ? 'search' : 't2t';
+  logChatDetail('core', 'request.config', { actualModel, chatType, enableSearch });
   sendLog('config.ready', { model: actualModel, chatType, enableSearch });
 
   // 创建会话
@@ -1239,9 +1254,16 @@ async function handleChatCompletionsWithLogs(body, authHeader, env, streamWriter
     })
   });
   const createData = await createResp.json();
-  if (!createData.success || !createData.data?.id) {
-    sendLog('chat.create.failed', { status: createResp.status });
-    return createResponse({ error: { message: 'Failed to create chat session', type: 'api_error' } }, 500);
+  logChatDetail('core', 'chat.create.response', {
+    status: createResp.status,
+    success: !!createData?.success,
+    hasChatId: !!createData?.data?.id,
+  });
+  if (!createResp.ok || !createData.success || !createData.data?.id) {
+    const errorMsg = createData?.message || createData?.msg || createData?.error || `HTTP ${createResp.status}`;
+    logChatDetail('core', 'chat.create.error', { status: createResp.status, error: errorMsg });
+    sendLog('chat.create.failed', { status: createResp.status, error: errorMsg, response: createData });
+    return createResponse({ error: { message: `Failed to create chat session: ${errorMsg}`, type: 'api_error' } }, createResp.ok ? 500 : createResp.status);
   }
   const chatId = createData.data.id;
   sendLog('chat.created', { chatId });
@@ -1249,6 +1271,10 @@ async function handleChatCompletionsWithLogs(body, authHeader, env, streamWriter
   // 解析消息与附件
   const parsedMessages = parseIncomingMessages(messages);
   const content = parsedMessages.content;
+  logChatDetail('core', 'message.parsed', {
+    contentLength: content.length,
+    attachmentCount: parsedMessages.attachments.length,
+  });
   sendLog('message.parsed', { contentLength: content.length, attachmentCount: parsedMessages.attachments.length });
 
   // 临时文件路径收集（用于后续清理）
@@ -1301,6 +1327,10 @@ async function handleChatCompletionsWithLogs(body, authHeader, env, streamWriter
     sendLog('attachments.upload.done', { uploadedCount: uploadedFiles.length });
   }
 
+  logChatDetail('core', 'message.ready', {
+    uploadedFileCount: uploadedFiles.length,
+  });
+
   // 发送请求
   sendLog('chat.sending', { chatId });
   const chatResp = await fetch(`${QWEN_BASE_URL}/api/v2/chat/completions?chat_id=${chatId}`, {
@@ -1324,10 +1354,13 @@ async function handleChatCompletionsWithLogs(body, authHeader, env, streamWriter
   });
 
   if (!chatResp.ok) {
-    sendLog('chat.response.failed', { status: chatResp.status });
-    return createResponse({ error: { message: await chatResp.text(), type: 'api_error' } }, chatResp.status);
+    const errorText = await chatResp.text().catch(() => '');
+    logChatDetail('core', 'chat.completion.error', { status: chatResp.status, chatId, error: errorText });
+    sendLog('chat.response.failed', { status: chatResp.status, error: errorText });
+    return createResponse({ error: { message: errorText || `HTTP ${chatResp.status}`, type: 'api_error' } }, chatResp.status);
   }
 
+  logChatDetail('core', 'chat.completion.started', { status: chatResp.status, chatId, stream: !!stream });
   sendLog('chat.streaming', {});
 
   const responseId = `chatcmpl-${uuidv4()}`;
@@ -1348,6 +1381,7 @@ async function handleChatCompletionsWithLogs(body, authHeader, env, streamWriter
 
   // 如果有流写入器，使用流式处理
   if (streamWriter && stream) {
+    logChatDetail('core', 'stream.proxy.express', { chatId, model: actualModel });
     const logAwareWriter = createLogStreamWriter(streamWriter, cleanupTempFiles);
     return logAwareWriter(chatResp, actualModel, responseId, created);
   }
@@ -1374,16 +1408,26 @@ async function handleChatCompletionsWithLogs(body, authHeader, env, streamWriter
     } catch {}
   }
 
+  logChatDetail('core', 'chat.completion.collected', {
+    chunkCount: chunks.length,
+    outputLength: chunks.join('').length,
+    stream: !!stream,
+  });
+  logChatDetail('core', 'stream.content.full', {
+    content: chunks.join(''),
+  });
   sendLog('chat.completed', { outputLength: chunks.join('').length });
 
   // 清理临时视频文件
   cleanupTempFiles();
 
   if (stream) {
+    logChatDetail('core', 'stream.repack.start', { chunkCount: chunks.length });
     const streamBody = chunks.map((c, i) => `data: ${JSON.stringify({
       id: responseId, object: 'chat.completion.chunk', created, model: actualModel,
       choices: [{ index: 0, delta: { content: c }, finish_reason: i === chunks.length - 1 ? 'stop' : null }]
     })}\n\n`).join('') + 'data: [DONE]\n\n';
+    logChatDetail('core', 'stream.repack.done', { responseId });
     return createStreamResponse(streamBody);
   }
 
