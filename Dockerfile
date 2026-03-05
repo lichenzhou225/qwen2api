@@ -3,8 +3,7 @@ FROM node:24-alpine
 WORKDIR /app
 
 # 安装视频处理依赖（构建阶段内置 yt-dlp）
-RUN apk add --no-cache ffmpeg python3 py3-pip \
-    && pip3 install --no-cache-dir --upgrade yt-dlp \
+RUN apk add --no-cache ffmpeg yt-dlp \
     && yt-dlp --version
 
 # 复制 package 文件
