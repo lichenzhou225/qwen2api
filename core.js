@@ -22,6 +22,8 @@ const CACHE_TTL = 4 * 60 * 1000;
 const QWEN_BASE_URL = 'https://chat.qwen.ai';
 const QWEN_WEB_REFERER = `${QWEN_BASE_URL}/`;
 const QWEN_GUEST_REFERER = `${QWEN_BASE_URL}/c/guest`;
+const WEB_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
+const WEB_ACCEPT_LANGUAGE = 'zh-CN,zh;q=0.9,en;q=0.8';
 let tokenCache = null;
 let tokenCacheTime = 0;
 
@@ -112,7 +114,7 @@ async function getBaxiaTokens() {
   let bxUmidToken;
   try {
     const resp = await fetch('https://sg-wum.alibaba.com/w/wu.json', {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+      headers: { 'User-Agent': WEB_USER_AGENT }
     });
     bxUmidToken = resp.headers.get('etag') || 'T2gA' + randomString(40);
   } catch { bxUmidToken = 'T2gA' + randomString(40); }
@@ -170,6 +172,25 @@ function createStreamResponse(body) {
     },
     body,
   };
+}
+
+function previewBody(rawText, maxLen = 240) {
+  const text = normalizeInputString(rawText || '');
+  if (!text) return '';
+  return text.length > maxLen ? `${text.slice(0, maxLen)}...` : text;
+}
+
+async function safeReadJson(response) {
+  const status = response?.status;
+  const rawText = await response.text().catch(() => '');
+  if (!rawText) {
+    return { ok: false, status, data: null, rawText: '', parseError: new Error('Empty response body') };
+  }
+  try {
+    return { ok: true, status, data: JSON.parse(rawText), rawText, parseError: null };
+  } catch (parseError) {
+    return { ok: false, status, data: null, rawText, parseError };
+  }
 }
 
 function logChatDetail(runtime, event, detail = {}) {
@@ -862,6 +883,8 @@ async function handleChatCompletions(body, authHeader, env, streamWriter) {
       'Accept': 'application/json', 'Content-Type': 'application/json',
       'bx-ua': bxUa, 'bx-umidtoken': bxUmidToken, 'bx-v': bxV,
       'Referer': QWEN_GUEST_REFERER, 'source': 'web',
+      'User-Agent': WEB_USER_AGENT,
+      'Accept-Language': WEB_ACCEPT_LANGUAGE,
       'x-request-id': uuidv4()
     },
     body: JSON.stringify({
@@ -869,7 +892,22 @@ async function handleChatCompletions(body, authHeader, env, streamWriter) {
       timestamp: Date.now(), project_id: ''
     })
   });
-  const createData = await createResp.json();
+  const createParsed = await safeReadJson(createResp);
+  if (!createParsed.ok) {
+    logChatDetail('core', 'chat.create.parse.error', {
+      status: createResp.status,
+      contentType: createResp.headers.get('content-type') || '',
+      bodyPreview: previewBody(createParsed.rawText),
+      parseError: createParsed.parseError?.message || '',
+    });
+    return createResponse({
+      error: {
+        message: `Failed to create chat session: upstream returned non-JSON response (HTTP ${createResp.status}).`,
+        type: 'api_error'
+      }
+    }, createResp.ok ? 502 : createResp.status);
+  }
+  const createData = createParsed.data;
   logChatDetail('core', 'chat.create.response', {
     status: createResp.status,
     success: !!createData?.success,
@@ -900,7 +938,10 @@ async function handleChatCompletions(body, authHeader, env, streamWriter) {
     headers: {
       'Accept': 'application/json', 'Content-Type': 'application/json',
       'bx-ua': bxUa, 'bx-umidtoken': bxUmidToken, 'bx-v': bxV,
-      'source': 'web', 'version': '0.2.9', 'Referer': QWEN_GUEST_REFERER, 'x-request-id': uuidv4()
+      'source': 'web', 'version': '0.2.9', 'Referer': QWEN_GUEST_REFERER,
+      'User-Agent': WEB_USER_AGENT,
+      'Accept-Language': WEB_ACCEPT_LANGUAGE,
+      'x-request-id': uuidv4()
     },
     body: JSON.stringify({
       stream: true, version: '2.1', incremental_output: true,
@@ -1400,6 +1441,8 @@ async function handleChatCompletionsWithLogs(body, authHeader, env, streamWriter
       'Accept': 'application/json', 'Content-Type': 'application/json',
       'bx-ua': bxUa, 'bx-umidtoken': bxUmidToken, 'bx-v': bxV,
       'Referer': QWEN_GUEST_REFERER, 'source': 'web',
+      'User-Agent': WEB_USER_AGENT,
+      'Accept-Language': WEB_ACCEPT_LANGUAGE,
       'x-request-id': uuidv4()
     },
     body: JSON.stringify({
@@ -1407,7 +1450,31 @@ async function handleChatCompletionsWithLogs(body, authHeader, env, streamWriter
       timestamp: Date.now(), project_id: ''
     })
   });
-  const createData = await createResp.json();
+  const createParsed = await safeReadJson(createResp);
+  if (!createParsed.ok) {
+    const bodyPreview = previewBody(createParsed.rawText);
+    const looksLikeHtmlBlock = /^\s*<!doctype|^\s*<html/i.test(createParsed.rawText || '');
+    logChatDetail('core', 'chat.create.parse.error', {
+      status: createResp.status,
+      contentType: createResp.headers.get('content-type') || '',
+      bodyPreview,
+      parseError: createParsed.parseError?.message || '',
+    });
+    sendLog('chat.create.failed', {
+      status: createResp.status,
+      error: 'non-json-response',
+      contentType: createResp.headers.get('content-type') || '',
+      bodyPreview,
+      blockedLikely: looksLikeHtmlBlock,
+    });
+    return createResponse({
+      error: {
+        message: `Failed to create chat session: upstream returned non-JSON response (HTTP ${createResp.status}).`,
+        type: 'api_error'
+      }
+    }, createResp.ok ? 502 : createResp.status);
+  }
+  const createData = createParsed.data;
   logChatDetail('core', 'chat.create.response', {
     status: createResp.status,
     success: !!createData?.success,
@@ -1492,7 +1559,10 @@ async function handleChatCompletionsWithLogs(body, authHeader, env, streamWriter
     headers: {
       'Accept': 'application/json', 'Content-Type': 'application/json',
       'bx-ua': bxUa, 'bx-umidtoken': bxUmidToken, 'bx-v': bxV,
-      'source': 'web', 'version': '0.2.9', 'Referer': QWEN_GUEST_REFERER, 'x-request-id': uuidv4()
+      'source': 'web', 'version': '0.2.9', 'Referer': QWEN_GUEST_REFERER,
+      'User-Agent': WEB_USER_AGENT,
+      'Accept-Language': WEB_ACCEPT_LANGUAGE,
+      'x-request-id': uuidv4()
     },
     body: JSON.stringify({
       stream: true, version: '2.1', incremental_output: true,

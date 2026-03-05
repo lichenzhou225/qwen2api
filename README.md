@@ -1,3 +1,12 @@
+---
+title: Qwen2API
+emoji: 🚀
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+pinned: false
+---
+
 # Qwen2API
 
 [中文文档](README_ZH.md) | English
@@ -23,6 +32,13 @@ docker build -t qwen2api .
 # Run container
 docker run -d -p 8765:8765 -e API_TOKENS=your_token qwen2api
 ```
+
+### Hugging Face Spaces (Docker)
+
+1. Create a new **Docker** Space on Hugging Face.
+2. Push this repository to the Space.
+3. Optional: set `API_TOKENS` in Space Variables/Secrets.
+4. The app listens on port `7860` in container mode (already configured in `Dockerfile`).
 
 ### Vercel
 

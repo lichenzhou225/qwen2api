@@ -6,6 +6,82 @@
 
 const { handleModels, handleChatCompletions, handleChatCompletionsWithLogs, handleRoot, handleChatPage, createResponse, validateToken, uuidv4 } = require('./core.js');
 
+function logRequestPathBegin(runtime, path) {
+  console.log(`[qwen2api][${runtime}][request.begin] path=${path}`);
+}
+
+function isHuggingFaceRuntime() {
+  const hasPrimarySpaceId = Boolean(process.env.SPACE_ID);
+  const hasAuthorRepo = Boolean(process.env.SPACE_AUTHOR_NAME && process.env.SPACE_REPO_NAME);
+  const hasCreatorId = Boolean(process.env.SPACES_CREATOR_USER_ID);
+  return Boolean(
+    hasPrimarySpaceId ||
+    hasAuthorRepo ||
+    hasCreatorId ||
+    process.env.HF_SPACE_ID ||
+    process.env.HF_HOME ||
+    process.env.HUGGINGFACE_SPACE_ID
+  );
+}
+
+function patchDnsForHuggingFace() {
+  if (!isHuggingFaceRuntime()) return;
+  if (process.platform !== 'linux') return;
+
+  const fs = require('fs');
+  const resolvPath = '/etc/resolv.conf';
+  const backupPath = '/etc/resolv.conf.bak';
+
+  try {
+    if (!fs.existsSync(resolvPath)) {
+      console.log('[qwen2api][startup][dns] /etc/resolv.conf 不存在，跳过');
+      return;
+    }
+
+    const stat = fs.lstatSync(resolvPath);
+    if (!stat.isFile()) {
+      console.log('[qwen2api][startup][dns] /etc/resolv.conf 非普通文件，跳过');
+      return;
+    }
+
+    const original = fs.readFileSync(resolvPath, 'utf8');
+    if (!fs.existsSync(backupPath)) {
+      fs.writeFileSync(backupPath, original, 'utf8');
+      console.log('✅ 已备份 /etc/resolv.conf 到 /etc/resolv.conf.bak');
+    }
+
+    let resolvContent = original;
+    let changed = false;
+
+    if (!/\b8\.8\.8\.8\b/.test(resolvContent)) {
+      resolvContent = `nameserver 8.8.8.8\n${resolvContent}`;
+      changed = true;
+      console.log('✅ 已添加 DNS 8.8.8.8');
+    }
+
+    if (!/\b8\.8\.4\.4\b/.test(resolvContent)) {
+      const lines = resolvContent.split(/\r?\n/);
+      lines.splice(1, 0, 'nameserver 8.8.4.4');
+      resolvContent = lines.join('\n');
+      changed = true;
+      console.log('✅ 已添加 DNS 8.8.4.4');
+    }
+
+    if (!changed) {
+      console.log('[qwen2api][startup][dns] DNS 已包含 8.8.8.8 / 8.8.4.4，无需修改');
+      return;
+    }
+
+    if (!resolvContent.endsWith('\n')) {
+      resolvContent += '\n';
+    }
+
+    fs.writeFileSync(resolvPath, resolvContent, 'utf8');
+  } catch (err) {
+    console.log(`[qwen2api][startup][dns] 跳过 DNS 配置: ${err && err.message ? err.message : String(err)}`);
+  }
+}
+
 // ============================================
 // Express Stream Handler
 // ============================================
@@ -181,6 +257,7 @@ async function serverlessHandler(req, res) {
   }
 
   if (req.method === 'POST' && normalizedPathname === '/v1/chat/completions/log') {
+    logRequestPathBegin('serverless', normalizedPathname);
     let body;
     try {
       body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
@@ -201,6 +278,7 @@ async function serverlessHandler(req, res) {
   }
 
   if (req.method === 'POST' && normalizedPathname === '/v1/chat/completions') {
+    logRequestPathBegin('serverless', normalizedPathname);
     let body;
     try {
       body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
@@ -240,6 +318,8 @@ async function serverlessHandler(req, res) {
 // ============================================
 
 function startExpressServer() {
+  patchDnsForHuggingFace();
+
   const express = require('express');
   const app = express();
   const jsonLimit = process.env.JSON_BODY_LIMIT || '100mb';
@@ -291,6 +371,7 @@ function startExpressServer() {
   });
 
   app.post('/v1/chat/completions', authMiddleware, async (req, res) => {
+    logRequestPathBegin('express', req.path || '/v1/chat/completions');
     const result = await handleChatCompletions(req.body, req.headers.authorization, null, createExpressStreamHandler(res));
     if (result && typeof result.statusCode === 'number') {
       res.status(result.statusCode).set(result.headers).send(result.body);
@@ -298,7 +379,23 @@ function startExpressServer() {
   });
 
   app.post('/v1/chat/completions/log', authMiddleware, async (req, res) => {
+    logRequestPathBegin('express', req.path || '/v1/chat/completions/log');
     const result = await handleChatCompletionsWithLogs(req.body, req.headers.authorization, null, createExpressLogStreamHandler(res));
+    if (res.headersSent) {
+      if (!res.writableEnded && result && typeof result.statusCode === 'number') {
+        let payload = { error: { message: `HTTP ${result.statusCode}`, type: 'api_error' } };
+        try {
+          const parsed = typeof result.body === 'string' ? JSON.parse(result.body) : result.body;
+          if (parsed && parsed.error) {
+            payload = parsed;
+          }
+        } catch {}
+        res.write(`data: ${JSON.stringify(payload)}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+      }
+      return;
+    }
     if (result && typeof result.statusCode === 'number') {
       res.status(result.statusCode).set(result.headers).send(result.body);
     }
