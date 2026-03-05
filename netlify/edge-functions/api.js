@@ -108,8 +108,10 @@ function handleChatPage() {
     body { font-family: Arial, sans-serif; margin: 0; background: #f6f7fb; }
     main { max-width: 920px; margin: 0 auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
     section { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; }
-    #messages { min-height: 52vh; max-height: 62vh; overflow: auto; }
-    .msg { padding: 8px; border-radius: 8px; white-space: pre-wrap; margin: 8px 0; }
+    .content-row { display: flex; gap: 10px; }
+    .content-row > section { flex: 1; }
+    #messages { flex: 1; min-height: 52vh; max-height: 62vh; overflow: auto; }
+    .msg { padding: 8px; border-radius: 8px; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; margin: 8px 0; }
     .msg-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; font-size: 12px; opacity: 0.8; }
     .mini { padding: 2px 8px; font-size: 12px; }
     .u { background: #e8f0ff; }
@@ -124,6 +126,26 @@ function handleChatPage() {
     .err { color: #b91c1c; }
     .ok { color: #047857; }
     .fi { display: flex; justify-content: space-between; align-items: center; border: 1px solid #e5e7eb; border-radius: 6px; padding: 6px; margin-top: 6px; }
+    .log-panel { width: 320px; display: none; }
+    .log-panel.visible { display: flex; flex-direction: column; }
+    .video-input-row { display: none; margin-bottom: 8px; }
+    .log-panel.visible .video-input-row { display: flex; gap: 6px; }
+    .video-input-row input { flex: 1; font-size: 12px; padding: 6px; }
+    .video-input-row button { font-size: 12px; padding: 6px 10px; background: #10b981; color: #fff; border-color: #10b981; }
+    #logs { min-height: 48vh; max-height: 58vh; overflow: auto; font-size: 12px; font-family: monospace; background: #1e1e1e; color: #d4d4d4; border-radius: 6px; padding: 8px; }
+    .log-entry { padding: 2px 0; border-bottom: 1px solid #333; }
+    .log-entry:last-child { border-bottom: none; }
+    .log-time { color: #6a9955; margin-right: 8px; }
+    .log-event { color: #569cd6; font-weight: bold; }
+    .log-detail { color: #ce9178; margin-left: 8px; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
+    .log-toggle { background: #6366f1; color: #fff; border-color: #6366f1; }
+    .log-toggle.active { background: #4f46e5; border-color: #4f46e5; }
+    .log-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    .log-header span { font-weight: bold; font-size: 14px; }
+    @media (max-width: 900px) {
+      .content-row { flex-direction: column; }
+      .log-panel { width: 100%; }
+    }
   </style>
 </head>
 <body>
@@ -133,10 +155,24 @@ function handleChatPage() {
         <input id="apiKey" type="text" placeholder="API Key（可选）" />
         <select id="model"><option value="qwen3.5-plus">qwen3.5-plus</option></select>
         <button id="refreshModels" type="button">刷新模型</button>
+        <button id="logToggle" class="log-toggle" type="button">显示日志</button>
         <button id="clear" class="warn" type="button">清空会话</button>
       </div>
     </section>
-    <section id="messages"></section>
+    <div class="content-row">
+      <section id="messages"></section>
+      <section class="log-panel" id="logPanel">
+        <div class="log-header">
+          <span>运行日志</span>
+          <button id="clearLogs" type="button" class="mini">清空日志</button>
+        </div>
+        <div class="video-input-row">
+          <input id="videoUrl" type="text" placeholder="输入视频链接（支持 YouTube/B站等）" />
+          <button id="downloadVideo" type="button">保存链接</button>
+        </div>
+        <div id="logs"></div>
+      </section>
+    </div>
     <section>
       <textarea id="prompt" placeholder="输入消息；Enter发送，Shift+Enter换行"></textarea>
       <div class="row">
@@ -152,13 +188,30 @@ function handleChatPage() {
     (function () {
       var MAX = 5;
       var MAX_SIZE = 100 * 1024 * 1024;
+      var MAX_HISTORY = 80;
+      var MAX_HISTORY_TEXT_CHARS = 12000;
+      var MAX_LOG_ENTRIES = 300;
+      var MAX_LOG_RAW_PREVIEW = 300;
       var KEY = 'qwen2api.chat.history.v1';
-      var state = { hist: [], files: [], ac: null };
+      var VIDEO_URL_KEY = 'qwen2api.video.url.v1';
+      var SHOW_LOGS_KEY = 'qwen2api.chat.showLogs.v1';
+      var MODEL_KEY = 'qwen2api.chat.model.v1';
+      var state = { hist: [], files: [], ac: null, sending: false, showLogs: false, videoUrl: '', modelLoading: false, modelLoadId: 0, preferredModel: '', lastModelAuthKey: null };
+      var apiBase = (function () { var p = (location && location.pathname) ? location.pathname : ''; if (p === '/.netlify/functions/api' || p.indexOf('/.netlify/functions/api/') === 0) return '/.netlify/functions/api'; if (p === '/api' || p.indexOf('/api/') === 0) return '/api'; return ''; })();
+      function apiUrl(path) {
+        return apiBase ? (apiBase + path) : path;
+      }
       var e = {
         apiKey: document.getElementById('apiKey'),
         model: document.getElementById('model'),
         refreshModels: document.getElementById('refreshModels'),
         clear: document.getElementById('clear'),
+        logToggle: document.getElementById('logToggle'),
+        logPanel: document.getElementById('logPanel'),
+        logs: document.getElementById('logs'),
+        clearLogs: document.getElementById('clearLogs'),
+        videoUrl: document.getElementById('videoUrl'),
+        downloadVideo: document.getElementById('downloadVideo'),
         messages: document.getElementById('messages'),
         prompt: document.getElementById('prompt'),
         files: document.getElementById('files'),
@@ -168,31 +221,427 @@ function handleChatPage() {
         status: document.getElementById('status')
       };
       function st(t, k) { e.status.textContent = t || ''; e.status.className = 'status ' + (k || ''); }
-      function msg(role, text, idx) { var d = document.createElement('div'); d.className = 'msg ' + (role === 'assistant' ? 'a' : 'u'); var head = document.createElement('div'); head.className = 'msg-head'; var roleLabel = document.createElement('span'); roleLabel.textContent = role === 'assistant' ? 'Assistant' : 'User'; head.appendChild(roleLabel); if (role === 'user' && typeof idx === 'number') { var retry = document.createElement('button'); retry.type = 'button'; retry.className = 'mini'; retry.textContent = '重发'; retry.onclick = function () { resendFromIndex(idx); }; head.appendChild(retry); } var body = document.createElement('div'); body.textContent = text || ''; d.appendChild(head); d.appendChild(body); e.messages.appendChild(d); e.messages.scrollTop = e.messages.scrollHeight; return body; }
-      function summarizeMessageContent(content) { if (typeof content === 'string') return content; if (!Array.isArray(content)) return ''; var texts = []; var names = []; for (var i = 0; i < content.length; i++) { var part = content[i] || {}; var type = part.type || ''; if (type === 'input_text' && typeof part.input_text === 'string' && part.input_text.trim()) texts.push(part.input_text.trim()); if ((type === 'input_file' || type === 'input_image' || type === 'input_video' || type === 'input_audio') && typeof part.filename === 'string' && part.filename.trim()) names.push(part.filename.trim()); } var base = texts.join('\n'); if (names.length > 0) return (base ? base + '\n' : '') + '[附件] ' + names.join(', '); return base; }
-      function rHist() { e.messages.innerHTML = ''; for (var i = 0; i < state.hist.length; i++) { var x = state.hist[i]; if (!x) continue; var content = x.content; if (typeof content !== 'string' && !Array.isArray(content)) continue; msg(x.role, summarizeMessageContent(content), i); } }
-      function save() { try { var kept = state.hist.filter(function (x) { if (!x) return false; if (typeof x.content === 'string') return !!x.content.trim(); return Array.isArray(x.content) && x.content.length > 0; }).slice(-40); localStorage.setItem(KEY, JSON.stringify(kept)); } catch (_) {} }
-      function load() { try { var v = localStorage.getItem(KEY); if (!v) return; var a = JSON.parse(v); if (Array.isArray(a)) state.hist = a.filter(function (x) { return x && (typeof x.content === 'string' || Array.isArray(x.content)); }); } catch (_) {} }
-      function busy(b) { e.send.disabled = b; e.stop.disabled = !b; e.prompt.disabled = b; e.files.disabled = b; e.clear.disabled = b; e.refreshModels.disabled = b; }
+      function msg(role, text, idx) { var d = document.createElement('div'); d.className = 'msg ' + (role === 'assistant' ? 'a' : 'u'); var head = document.createElement('div'); head.className = 'msg-head'; var roleLabel = document.createElement('span'); roleLabel.textContent = role === 'assistant' ? '助手' : '用户'; head.appendChild(roleLabel); if (role === 'user' && typeof idx === 'number') { var retry = document.createElement('button'); retry.type = 'button'; retry.className = 'mini'; retry.textContent = '重发'; retry.disabled = state.sending || state.modelLoading; retry.onclick = function () { resendFromIndex(idx); }; head.appendChild(retry); } var body = document.createElement('div'); body.textContent = text || ''; d.appendChild(head); d.appendChild(body); e.messages.appendChild(d); e.messages.scrollTop = e.messages.scrollHeight; return body; }
+      function summarizeMessageContent(content) { if (typeof content === 'string') { if (content.length > MAX_HISTORY_TEXT_CHARS) return content.slice(0, MAX_HISTORY_TEXT_CHARS) + '\n\n[已截断，原文过长]'; return content; } if (!Array.isArray(content)) return ''; var texts = []; var names = []; for (var i = 0; i < content.length; i++) { var part = content[i] || {}; var type = part.type || ''; if (type === 'input_text' && typeof part.input_text === 'string' && part.input_text.trim()) texts.push(part.input_text.trim()); if ((type === 'input_file' || type === 'input_image' || type === 'input_video' || type === 'input_audio') && typeof part.filename === 'string' && part.filename.trim()) names.push(part.filename.trim()); } var base = texts.join('\n'); if (base.length > MAX_HISTORY_TEXT_CHARS) base = base.slice(0, MAX_HISTORY_TEXT_CHARS) + '\n\n[已截断，原文过长]'; if (names.length > 0) return (base ? base + '\n' : '') + '[附件] ' + names.join(', '); return base; }
+      function rHist() { e.messages.innerHTML = ''; for (var i = 0; i < state.hist.length; i++) { var x = state.hist[i]; if (!x) continue; var content = x.content; if (typeof content !== 'string' && !Array.isArray(content)) continue; var preview = summarizeMessageContent(content); if (!preview || !String(preview).trim()) preview = x.role === 'assistant' ? '（空响应）' : '[附件消息]'; msg(x.role, preview, i); } syncRetryEnabled(); }
+      function canSendNow() { return !!(e.prompt.value || '').trim() || state.files.length > 0; }
+      function syncSendEnabled() { e.send.disabled = !!state.sending || !!state.modelLoading || !canSendNow(); }
+      function syncRetryEnabled() { var retryButtons = e.messages.querySelectorAll('.msg-head .mini'); for (var i = 0; i < retryButtons.length; i++) retryButtons[i].disabled = !!state.sending || !!state.modelLoading; }
+      function compactMessageContentForStorage(content) { if (typeof content === 'string') { if (content.length > MAX_HISTORY_TEXT_CHARS) return content.slice(0, MAX_HISTORY_TEXT_CHARS) + '\n\n[已截断，原文过长]'; return content; } return summarizeMessageContent(content); }
+      function compactHistoryForStorage(list) { var source = Array.isArray(list) ? list : []; var out = []; for (var i = 0; i < source.length; i++) { var item = source[i] || {}; out.push({ role: item.role === 'assistant' ? 'assistant' : 'user', content: compactMessageContentForStorage(item.content) }); } return out; }
+      function persistHistoryWithFallback(kept) { var list = compactHistoryForStorage(kept); for (var start = 0; start <= list.length; start++) { try { localStorage.setItem(KEY, JSON.stringify(list.slice(start))); return; } catch (_) {} } }
+      function save() { var kept = []; try { kept = state.hist.filter(function (x) { if (!x) return false; if (typeof x.content === 'string') return !!x.content.trim(); return Array.isArray(x.content) && x.content.length > 0; }).slice(-MAX_HISTORY); } catch (_) {} try { persistHistoryWithFallback(kept); } catch (_) {} try { if (state.videoUrl) localStorage.setItem(VIDEO_URL_KEY, state.videoUrl); else localStorage.removeItem(VIDEO_URL_KEY); localStorage.setItem(SHOW_LOGS_KEY, state.showLogs ? '1' : '0'); if (state.preferredModel) localStorage.setItem(MODEL_KEY, state.preferredModel); else localStorage.removeItem(MODEL_KEY); } catch (_) {} }
+      function load() { try { var v = localStorage.getItem(KEY); if (v) { var a = JSON.parse(v); if (Array.isArray(a)) { var normalized = []; for (var i = 0; i < a.length; i++) { var item = a[i] || {}; var content = item.content; if (typeof content !== 'string' && !Array.isArray(content)) continue; normalized.push({ role: item.role === 'assistant' ? 'assistant' : 'user', content: content }); } state.hist = normalized.slice(-MAX_HISTORY); } } } catch (_) {} try { var savedVideoUrl = localStorage.getItem(VIDEO_URL_KEY); if (savedVideoUrl) { state.videoUrl = savedVideoUrl; e.videoUrl.value = savedVideoUrl; } } catch (_) {} try { state.showLogs = localStorage.getItem(SHOW_LOGS_KEY) === '1'; } catch (_) {} try { var savedModel = localStorage.getItem(MODEL_KEY); if (savedModel) state.preferredModel = savedModel; } catch (_) {} }
+      function busy(b) { e.stop.disabled = !b; if (!b) e.stop.textContent = '中断'; e.prompt.disabled = b; e.files.disabled = b; e.clear.disabled = b; e.refreshModels.disabled = b || state.modelLoading; e.logToggle.disabled = b; e.clearLogs.disabled = b; e.videoUrl.disabled = b; e.downloadVideo.disabled = b; e.apiKey.disabled = b; e.model.disabled = b; e.send.textContent = b ? '发送中...' : '发送'; attRow(); }
       function bfmt(n) { if (n < 1024) return n + ' B'; if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB'; return (n / 1024 / 1024).toFixed(1) + ' MB'; }
-      function attRow() { e.atts.innerHTML = ''; for (var i = 0; i < state.files.length; i++) { (function (idx) { var w = document.createElement('div'); w.className = 'fi'; var t = document.createElement('div'); var f = state.files[idx]; t.textContent = f.name + ' (' + bfmt(f.size) + ')'; var rm = document.createElement('button'); rm.type = 'button'; rm.textContent = '移除'; rm.onclick = function () { state.files.splice(idx, 1); attRow(); }; w.appendChild(t); w.appendChild(rm); e.atts.appendChild(w); })(i); } }
+      function attRow() { e.atts.innerHTML = ''; for (var i = 0; i < state.files.length; i++) { (function (idx) { var w = document.createElement('div'); w.className = 'fi'; var t = document.createElement('div'); var f = state.files[idx]; t.textContent = f.name + ' (' + bfmt(f.size) + ')'; var rm = document.createElement('button'); rm.type = 'button'; rm.textContent = '移除'; rm.disabled = state.sending || state.modelLoading; rm.onclick = function () { if (state.sending || state.modelLoading) { st(state.sending ? '请求进行中，暂不能修改附件。' : '模型列表加载中，请稍候再修改附件。', 'err'); return; } state.files.splice(idx, 1); attRow(); }; w.appendChild(t); w.appendChild(rm); e.atts.appendChild(w); })(i); } syncSendEnabled(); syncRetryEnabled(); }
       function toDataUrl(file) { return new Promise(function (ok, bad) { var r = new FileReader(); r.onload = function () { ok(String(r.result || '')); }; r.onerror = function () { bad(new Error('读取文件失败: ' + file.name)); }; r.readAsDataURL(file); }); }
-      function emsg(code, txt) { if (code === 401) return '鉴权失败：Incorrect API key provided.'; if (code === 413) return '请求体过大，请减小附件。'; if (code >= 500) return '服务端异常，请稍后重试。'; return txt ? ('请求失败：' + txt) : ('请求失败（HTTP ' + code + '）'); }
+      function formatTime(ts) { var d = new Date(ts); var h = String(d.getHours()).padStart(2, '0'); var m = String(d.getMinutes()).padStart(2, '0'); var s = String(d.getSeconds()).padStart(2, '0'); var ms = String(d.getMilliseconds()).padStart(3, '0'); return h + ':' + m + ':' + s + '.' + ms; }
+      function formatLogValue(v) { var out = ''; if (v === null || v === undefined) out = ''; else if (typeof v === 'string') out = v; else if (typeof v === 'number' || typeof v === 'boolean') out = String(v); else { try { out = JSON.stringify(v); } catch (_) { out = String(v); } } if (out.length > 1000) out = out.slice(0, 1000) + '...'; return out; }
+      function addLog(logData) {
+        if (!e.logs) return;
+        var payload = logData && typeof logData === 'object' ? logData : { raw: String(logData || '') };
+        var ts = Number(payload.timestamp || Date.now());
+        var eventName = String(payload.event || 'log');
+        var detailKeys = ['model', 'chatId', 'index', 'filename', 'filetype', 'status', 'error', 'messageCount', 'contentLength', 'attachmentCount', 'uploadedCount', 'outputLength', 'chatType', 'enableSearch', 'videoUrl', 'downloadProgress', 'downloadStatus', 'filepath', 'size', 'sizeMB', 'minResolution', 'raw'];
+        var details = [];
+        for (var i = 0; i < detailKeys.length; i++) {
+          var k = detailKeys[i];
+          if (payload[k] !== undefined && payload[k] !== null && payload[k] !== '') details.push(k + '=' + formatLogValue(payload[k]));
+        }
+        if (details.length === 0) {
+          var fallback = [];
+          for (var key in payload) {
+            if (!Object.prototype.hasOwnProperty.call(payload, key)) continue;
+            if (key === 'timestamp' || key === 'event') continue;
+            if (payload[key] === undefined || payload[key] === null || payload[key] === '') continue;
+            fallback.push(key + '=' + formatLogValue(payload[key]));
+          }
+          details = fallback;
+        }
+        var atBottom = (e.logs.scrollHeight - e.logs.scrollTop - e.logs.clientHeight) < 12;
+        var row = document.createElement('div');
+        row.className = 'log-entry';
+        var t = document.createElement('span');
+        t.className = 'log-time';
+        t.textContent = '[' + formatTime(ts) + ']';
+        var ev = document.createElement('span');
+        ev.className = 'log-event';
+        ev.textContent = eventName;
+        var detail = document.createElement('span');
+        detail.className = 'log-detail';
+        detail.textContent = details.join(' | ');
+        row.appendChild(t);
+        row.appendChild(ev);
+        row.appendChild(detail);
+        e.logs.appendChild(row);
+        while (e.logs.childNodes.length > MAX_LOG_ENTRIES) e.logs.removeChild(e.logs.firstChild);
+        if (atBottom) e.logs.scrollTop = e.logs.scrollHeight;
+      }
+      function createSSEState() {
+        return { buffer: '', eventType: '', dataLines: [] };
+      }
+      function parseSSELines(state, chunkText, isDone, useLogApi, outRef, aEl) {
+        state.buffer += chunkText;
+        var lines = state.buffer.split('\n');
+        state.buffer = lines.pop() || '';
+        if (isDone && state.buffer) {
+          lines.push(state.buffer);
+          state.buffer = '';
+        }
+        var reachedDone = false;
+        var apiError = '';
+
+        function handlePayload(payload) {
+          if (!payload) return;
+          if (useLogApi && state.eventType === 'log') {
+            try { addLog(JSON.parse(payload)); }
+            catch (_) {
+              var clippedRaw = payload.length > MAX_LOG_RAW_PREVIEW ? (payload.slice(0, MAX_LOG_RAW_PREVIEW) + '...') : payload;
+              addLog({ event: 'log.parse.failed', timestamp: Date.now(), raw: clippedRaw, size: payload.length });
+            }
+            return;
+          }
+          if (payload === '[DONE]') {
+            reachedDone = true;
+            return;
+          }
+          try {
+            var parsed = JSON.parse(payload);
+            if (parsed && parsed.error) {
+              apiError = String((parsed.error && parsed.error.message) || '请求失败');
+              return;
+            }
+            var delta = parsed && parsed.choices && parsed.choices[0] && parsed.choices[0].delta && parsed.choices[0].delta.content;
+            if (typeof delta === 'string' && delta) {
+              outRef.value += delta;
+              aEl.textContent = outRef.value;
+              e.messages.scrollTop = e.messages.scrollHeight;
+            }
+          } catch (_) {}
+        }
+
+        for (var i = 0; i < lines.length; i++) {
+          var raw = lines[i] || '';
+          var line = raw.replace(/\r$/, '');
+          var normalized = line.trimStart();
+          if (!normalized.trim()) {
+            if (state.dataLines.length > 0) {
+              handlePayload(state.dataLines.join('\n'));
+              state.dataLines = [];
+            }
+            state.eventType = '';
+            if (reachedDone || apiError) break;
+            continue;
+          }
+          if (normalized.indexOf(':') === 0) {
+            continue;
+          }
+          var eventMatch = normalized.match(/^event\s*:(.*)$/);
+          if (eventMatch) {
+            state.eventType = eventMatch[1].trim();
+            continue;
+          }
+          var dataMatch = line.match(/^\s*data\s*:(.*)$/);
+          if (dataMatch) {
+            var dataLine = dataMatch[1];
+            if (dataLine.indexOf(' ') === 0) dataLine = dataLine.slice(1);
+            state.dataLines.push(dataLine);
+          }
+        }
+
+        if ((isDone || reachedDone || apiError) && state.dataLines.length > 0) {
+          handlePayload(state.dataLines.join('\n'));
+          state.dataLines = [];
+        }
+
+        if (reachedDone || apiError) state.eventType = '';
+        return { reachedDone: reachedDone, apiError: apiError };
+      }
+      function emsg(code, txt, payloadJson) { if (payloadJson && payloadJson.error && payloadJson.error.message) return String(payloadJson.error.message); if (code === 401) return '鉴权失败：Incorrect API key provided.'; if (code === 413) return '请求体过大，请减小附件。'; if (code >= 500) return '服务端异常，请稍后重试。'; return txt ? ('请求失败：' + txt) : ('请求失败（HTTP ' + code + '）'); }
+      async function readErrorPayload(resp) { var txt = await resp.text().catch(function () { return ''; }); var json = null; try { json = txt ? JSON.parse(txt) : null; } catch (_) {} return { txt: txt, json: json }; }
+      function extractAssistantText(payloadJson, payloadText) { if (payloadJson) { var c0 = payloadJson.choices && payloadJson.choices[0]; var msgContent = c0 && c0.message && c0.message.content; if (typeof msgContent === 'string' && msgContent.trim()) return msgContent; if (Array.isArray(msgContent)) { var parts = []; for (var i = 0; i < msgContent.length; i++) { var p = msgContent[i] || {}; if (typeof p === 'string' && p.trim()) parts.push(p.trim()); else if (typeof p.text === 'string' && p.text.trim()) parts.push(p.text.trim()); else if (typeof p.output_text === 'string' && p.output_text.trim()) parts.push(p.output_text.trim()); } if (parts.length > 0) return parts.join('\n'); } var c0text = c0 && c0.text; if (typeof c0text === 'string' && c0text.trim()) return c0text; if (typeof payloadJson.output_text === 'string' && payloadJson.output_text.trim()) return payloadJson.output_text; } return payloadText || ''; }
       async function buildContent(text, files) { var c = []; if (text) c.push({ type: 'input_text', input_text: text }); for (var i = 0; i < files.length; i++) { var f = files[i], d = await toDataUrl(f), m = (f.type || 'application/octet-stream').toLowerCase(); if (m.startsWith('image/')) c.push({ type: 'input_image', image_url: d, filename: f.name, mime_type: m }); else c.push({ type: 'input_file', file_data: d, filename: f.name, mime_type: m }); } return c; }
-      async function loadModels() { var prev = e.model.value; var headers = {}; var key = (e.apiKey.value || '').trim(); if (key) headers.Authorization = 'Bearer ' + key; try { st('正在加载模型列表...', 'ok'); var resp = await fetch('/v1/models', { headers: headers }); if (!resp.ok) { var t = await resp.text().catch(function(){ return ''; }); throw new Error(emsg(resp.status, t)); } var data = await resp.json(); var arr = Array.isArray(data && data.data) ? data.data : []; var ids = arr.map(function (x) { return x && x.id; }).filter(Boolean); if (ids.length === 0) ids = ['qwen3.5-plus']; e.model.innerHTML = ''; for (var i = 0; i < ids.length; i++) { var op = document.createElement('option'); op.value = ids[i]; op.textContent = ids[i]; e.model.appendChild(op); } if (prev && ids.indexOf(prev) >= 0) e.model.value = prev; st('模型列表已更新（' + ids.length + '）', 'ok'); } catch (err) { e.model.innerHTML = '<option value="qwen3.5-plus">qwen3.5-plus</option>'; st(err && err.message ? err.message : '加载模型失败，已回退默认模型。', 'err'); } }
-      function resendFromIndex(idx) { if (state.ac) return; var item = state.hist[idx]; if (!item || item.role !== 'user' || (typeof item.content !== 'string' && !Array.isArray(item.content))) { st('仅支持重发用户消息。', 'err'); return; } e.prompt.value = summarizeMessageContent(item.content); send(item.content, true, idx); }
-      async function send(forceText, fromResend, replayFromIndex) { if (state.ac) return; var text = ''; var filesForSend = fromResend ? [] : state.files; var userMessageContent; if (Array.isArray(forceText)) { userMessageContent = forceText; text = summarizeMessageContent(forceText).trim(); } else { text = (typeof forceText === 'string' ? forceText : (e.prompt.value || '')).trim(); if (!text && filesForSend.length === 0) { st('请输入内容或选择附件。', 'err'); return; } } var model = (e.model.value || '').trim() || 'qwen3.5-plus'; var key = (e.apiKey.value || '').trim(); if (!userMessageContent) { var content; try { st('正在处理附件...', 'ok'); content = await buildContent(text, filesForSend); } catch (err) { st(err && err.message || '附件处理失败', 'err'); return; } userMessageContent = (content.length <= 1 && text) ? text : content; } if (typeof replayFromIndex === 'number' && replayFromIndex >= 0) { state.hist = state.hist.slice(0, replayFromIndex); save(); rHist(); } msg('user', summarizeMessageContent(userMessageContent) || '[附件消息]', state.hist.length); var aEl = msg('assistant', ''); var payload = state.hist.slice(); payload.push({ role: 'user', content: userMessageContent }); state.ac = new AbortController(); busy(true); st('请求中（流式）...', 'ok'); try { var h = { 'Content-Type': 'application/json' }; if (key) h.Authorization = 'Bearer ' + key; var resp = await fetch('/v1/chat/completions', { method: 'POST', headers: h, body: JSON.stringify({ model: model, stream: true, messages: payload }), signal: state.ac.signal }); if (!resp.ok) { var t = await resp.text().catch(function () { return ''; }); throw new Error(emsg(resp.status, t)); } if (!resp.body) throw new Error('浏览器不支持流式响应。'); var r = resp.body.getReader(); var d = new TextDecoder(); var buf = ''; var out = ''; var done = false; while (!done) { var ch = await r.read(); done = ch.done; buf += d.decode(ch.value || new Uint8Array(), { stream: !done }); var lines = buf.split('\n'); buf = lines.pop() || ''; for (var i = 0; i < lines.length; i++) { var ln = lines[i].trim(); if (!ln || ln.indexOf('data:') !== 0) continue; var p = ln.slice(5).trim(); if (!p) continue; if (p === '[DONE]') { done = true; break; } try { var j = JSON.parse(p); var delta = j && j.choices && j.choices[0] && j.choices[0].delta && j.choices[0].delta.content; if (typeof delta === 'string' && delta) { out += delta; aEl.textContent = 'Assistant: ' + out; e.messages.scrollTop = e.messages.scrollHeight; } } catch (_) {} } } if (!out) { out = '(empty response)'; aEl.textContent = 'Assistant: ' + out; } state.hist.push({ role: 'user', content: userMessageContent }); state.hist.push({ role: 'assistant', content: out }); save(); e.prompt.value = ''; state.files = []; attRow(); st('完成。', 'ok'); } catch (err) { if (err && err.name === 'AbortError') st('已中断请求。', 'err'); else { var m = err && err.message || '请求失败'; st(m, 'err'); if (!aEl.textContent) aEl.textContent = 'Assistant: [错误] ' + m; } } finally { state.ac = null; busy(false); } }
-      e.files.onchange = function () { var fs = Array.from(e.files.files || []); for (var i = 0; i < fs.length; i++) { if (state.files.length >= MAX) { st('最多允许 ' + MAX + ' 个附件。', 'err'); break; } var f = fs[i]; if (f.size > MAX_SIZE) { st('文件过大：' + f.name + '（上限 ' + bfmt(MAX_SIZE) + '）', 'err'); continue; } state.files.push(f); } e.files.value = ''; attRow(); if (state.files.length) st('已选择 ' + state.files.length + ' 个附件。', 'ok'); };
-      e.send.onclick = function () { send(); };
-      e.stop.onclick = function () { if (state.ac) state.ac.abort(); };
-      e.clear.onclick = function () { state.hist = []; save(); state.files = []; attRow(); rHist(); st('会话已清空。', 'ok'); };
-      e.refreshModels.onclick = function () { loadModels(); };
-      e.apiKey.addEventListener('blur', function () { loadModels(); });
-      e.prompt.onkeydown = function (ev) { if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); send(); } };
+      async function loadModels() {
+        var reqId = ++state.modelLoadId;
+        var prev = (e.model.value || '').trim();
+        var preferred = (state.preferredModel || '').trim();
+        var headers = {};
+        var key = (e.apiKey.value || '').trim();
+        var authKey = key ? ('k:' + key) : 'anon';
+        if (key) headers.Authorization = 'Bearer ' + key;
+        e.refreshModels.disabled = true;
+        e.refreshModels.textContent = '加载中...';
+        state.modelLoading = true;
+        syncSendEnabled();
+        syncRetryEnabled();
+        e.apiKey.disabled = true;
+        e.model.disabled = true;
+        e.files.disabled = true;
+        e.clear.disabled = true;
+        e.logToggle.disabled = true;
+        e.clearLogs.disabled = true;
+        e.videoUrl.disabled = true;
+        e.downloadVideo.disabled = true;
+        try {
+          st('正在加载模型列表...', 'ok');
+          var resp = await fetch(apiUrl('/v1/models'), { headers: headers });
+          if (reqId !== state.modelLoadId) return;
+          if (!resp.ok) {
+            var modelErr = await readErrorPayload(resp);
+            throw new Error(emsg(resp.status, modelErr.txt, modelErr.json));
+          }
+          var data = await resp.json();
+          if (reqId !== state.modelLoadId) return;
+          var latestSelected = (e.model.value || '').trim();
+          var arr = Array.isArray(data && data.data) ? data.data : [];
+          var ids = arr.map(function (x) { return x && x.id; }).filter(Boolean);
+          if (ids.length === 0) ids = ['qwen3.5-plus'];
+          e.model.innerHTML = '';
+          for (var i = 0; i < ids.length; i++) {
+            var op = document.createElement('option');
+            op.value = ids[i];
+            op.textContent = ids[i];
+            e.model.appendChild(op);
+          }
+          var authChanged = state.lastModelAuthKey !== null && state.lastModelAuthKey !== authKey;
+          if (!authChanged && latestSelected && ids.indexOf(latestSelected) >= 0) e.model.value = latestSelected;
+          else if (!authChanged && prev && ids.indexOf(prev) >= 0) e.model.value = prev;
+          else if (!authChanged && preferred && ids.indexOf(preferred) >= 0) e.model.value = preferred;
+          else e.model.value = ids[0];
+          state.lastModelAuthKey = authKey;
+          state.preferredModel = e.model.value;
+          save();
+          st('模型列表已更新（' + ids.length + '）', 'ok');
+        } catch (err) {
+          if (reqId !== state.modelLoadId) return;
+          e.model.innerHTML = '<option value="qwen3.5-plus">qwen3.5-plus</option>';
+          e.model.value = 'qwen3.5-plus';
+          state.lastModelAuthKey = authKey;
+          state.preferredModel = e.model.value;
+          save();
+          st(err && err.message ? err.message : '加载模型失败，已回退默认模型。', 'err');
+        } finally {
+          if (reqId === state.modelLoadId) {
+            state.modelLoading = false;
+            e.refreshModels.textContent = '刷新模型';
+            e.refreshModels.disabled = !!state.sending;
+            syncSendEnabled();
+            syncRetryEnabled();
+            e.apiKey.disabled = !!state.sending;
+            e.model.disabled = !!state.sending;
+            e.files.disabled = !!state.sending;
+            e.clear.disabled = !!state.sending;
+            e.logToggle.disabled = !!state.sending;
+            e.clearLogs.disabled = !!state.sending;
+            e.videoUrl.disabled = !!state.sending;
+            e.downloadVideo.disabled = !!state.sending;
+          }
+        }
+      }
+      function isResendContentReplayable(content) { if (!Array.isArray(content)) return true; for (var i = 0; i < content.length; i++) { var part = content[i] || {}; var type = part.type || ''; if (type === 'input_file' && typeof part.file_data !== 'string') return false; if (type === 'input_image' && typeof part.image_url !== 'string') return false; if (type === 'input_video' && typeof part.video_url !== 'string' && typeof part.file_data !== 'string') return false; if (type === 'input_audio' && typeof part.audio_url !== 'string' && typeof part.file_data !== 'string') return false; } return true; }
+      function resendFromIndex(idx) { if (state.sending || state.modelLoading) { st(state.sending ? '请求进行中，请稍候重试。' : '模型列表加载中，请稍候重发。', 'err'); return; } var item = state.hist[idx]; if (!item || item.role !== 'user' || (typeof item.content !== 'string' && !Array.isArray(item.content))) { st('仅支持重发用户消息。', 'err'); return; } var replayable = isResendContentReplayable(item.content); var summarized = summarizeMessageContent(item.content).trim(); if (!summarized) summarized = '[附件消息]'; var resendContent = replayable ? item.content : summarized; e.prompt.value = summarizeMessageContent(resendContent) || '[附件消息]'; if (!replayable) st('历史附件已简化，已回退为文本重发。', 'ok'); send(resendContent, true, idx); }
+      async function send(forceText, fromResend, replayFromIndex) {
+        if (state.sending) return;
+        if (state.modelLoading) {
+          st('模型列表加载中，请稍候发送。', 'err');
+          return;
+        }
+        var text = '';
+        var filesForSend = fromResend ? [] : state.files;
+        var userMessageContent;
+        if (Array.isArray(forceText)) {
+          userMessageContent = forceText;
+          text = summarizeMessageContent(forceText).trim();
+        } else {
+          text = (typeof forceText === 'string' ? forceText : (e.prompt.value || '')).trim();
+          if (!text && filesForSend.length === 0) {
+            st('请输入内容或选择附件。', 'err');
+            return;
+          }
+        }
+        var model = (e.model.value || '').trim() || 'qwen3.5-plus';
+        var key = (e.apiKey.value || '').trim();
+        if (!userMessageContent) {
+          var content;
+          try {
+            st('正在处理附件...', 'ok');
+            content = await buildContent(text, filesForSend);
+          } catch (err) {
+            st(err && err.message || '附件处理失败', 'err');
+            return;
+          }
+          userMessageContent = (content.length <= 1 && text) ? text : content;
+        }
+        if (typeof replayFromIndex === 'number' && replayFromIndex >= 0) {
+          state.hist = state.hist.slice(0, replayFromIndex);
+          save();
+          rHist();
+        }
+        msg('user', summarizeMessageContent(userMessageContent) || '[附件消息]', state.hist.length);
+        var aEl = msg('assistant', '');
+        var payload = state.hist.slice();
+        payload.push({ role: 'user', content: userMessageContent });
+        state.sending = true;
+        state.ac = new AbortController();
+        busy(true);
+        var useLogApi = state.showLogs;
+        st(useLogApi ? '请求中（带日志流式）...' : '请求中（流式）...', 'ok');
+        try {
+          var h = { 'Content-Type': 'application/json' };
+          if (key) h.Authorization = 'Bearer ' + key;
+          var endpoint = useLogApi ? apiUrl('/v1/chat/completions/log') : apiUrl('/v1/chat/completions');
+          var videoUrl = (e.videoUrl.value || state.videoUrl || '').trim();
+          var reqBody = { model: model, stream: true, messages: payload };
+          if (useLogApi && videoUrl) reqBody.video_url = videoUrl;
+          var resp = await fetch(endpoint, { method: 'POST', headers: h, body: JSON.stringify(reqBody), signal: state.ac.signal });
+          if (!resp.ok) {
+            var apiErr = await readErrorPayload(resp);
+            throw new Error(emsg(resp.status, apiErr.txt, apiErr.json));
+          }
+          var contentType = String(resp.headers.get('content-type') || '').toLowerCase();
+          var isEventStream = contentType.indexOf('text/event-stream') >= 0;
+          if (!isEventStream) {
+            var plain = await readErrorPayload(resp);
+            if (plain.json && plain.json.error) throw new Error(emsg(resp.status, plain.txt, plain.json));
+            var plainOutput = (extractAssistantText(plain.json, plain.txt) || '').trim() || '（空响应）';
+            aEl.textContent = plainOutput;
+            e.messages.scrollTop = e.messages.scrollHeight;
+            state.hist.push({ role: 'user', content: userMessageContent });
+            state.hist.push({ role: 'assistant', content: plainOutput });
+            if (state.hist.length > MAX_HISTORY) state.hist = state.hist.slice(-MAX_HISTORY);
+            save();
+            e.prompt.value = '';
+            state.files = [];
+            attRow();
+            st('完成。', 'ok');
+            return;
+          }
+          if (!resp.body) throw new Error('浏览器不支持流式响应。');
+          var reader = resp.body.getReader();
+          var decoder = new TextDecoder();
+          var sseState = createSSEState();
+          var outRef = { value: '' };
+          var gotDone = false;
+          var streamError = '';
+          while (!gotDone) {
+            var ch = await reader.read();
+            var done = !!ch.done;
+            var chunkText = decoder.decode(ch.value || new Uint8Array(), { stream: !done });
+            var parsed = parseSSELines(sseState, chunkText, done, useLogApi, outRef, aEl);
+            if (parsed.apiError) {
+              streamError = parsed.apiError;
+              gotDone = true;
+            }
+            if (parsed.reachedDone || done) gotDone = true;
+          }
+          if (streamError) throw new Error(streamError);
+          if (!outRef.value) {
+            outRef.value = '（空响应）';
+            aEl.textContent = outRef.value;
+          }
+          state.hist.push({ role: 'user', content: userMessageContent });
+          state.hist.push({ role: 'assistant', content: outRef.value });
+          if (state.hist.length > MAX_HISTORY) state.hist = state.hist.slice(-MAX_HISTORY);
+          save();
+          e.prompt.value = '';
+          state.files = [];
+          attRow();
+          st('完成。', 'ok');
+        } catch (err) {
+          if (err && err.name === 'AbortError') {
+            st('已中断请求。', 'err');
+            if (!aEl.textContent) aEl.textContent = '[已中断]';
+            else aEl.textContent += '\n\n[已中断]';
+            e.messages.scrollTop = e.messages.scrollHeight;
+          } else {
+            var m = err && err.message || '请求失败';
+            st(m, 'err');
+            if (!aEl.textContent) aEl.textContent = '[错误] ' + m;
+            else aEl.textContent += '\n\n[错误] ' + m;
+            e.messages.scrollTop = e.messages.scrollHeight;
+          }
+          state.hist.push({ role: 'user', content: userMessageContent });
+          state.hist.push({ role: 'assistant', content: aEl.textContent || ((err && err.name === 'AbortError') ? '[已中断]' : '[错误] 请求失败') });
+          if (state.hist.length > MAX_HISTORY) state.hist = state.hist.slice(-MAX_HISTORY);
+          save();
+        } finally {
+          state.ac = null;
+          state.sending = false;
+          busy(false);
+          e.prompt.focus();
+        }
+      }
+      e.files.onchange = function () {
+        if (state.sending || state.modelLoading) {
+          st(state.sending ? '请求进行中，暂不能修改附件。' : '模型列表加载中，请稍候再修改附件。', 'err');
+          e.files.value = '';
+          return;
+        }
+        var fs = Array.from(e.files.files || []);
+        var added = 0;
+        var skipped = 0;
+        for (var i = 0; i < fs.length; i++) {
+          if (state.files.length >= MAX) {
+            st('最多允许 ' + MAX + ' 个附件。', 'err');
+            break;
+          }
+          var f = fs[i];
+          if (f.size > MAX_SIZE) {
+            st('文件过大：' + f.name + '（上限 ' + bfmt(MAX_SIZE) + '）', 'err');
+            skipped++;
+            continue;
+          }
+          var exists = false;
+          for (var j = 0; j < state.files.length; j++) {
+            var x = state.files[j];
+            if (x && x.name === f.name && x.size === f.size && x.lastModified === f.lastModified) { exists = true; break; }
+          }
+          if (exists) { skipped++; continue; }
+          state.files.push(f);
+          added++;
+        }
+        e.files.value = '';
+        attRow();
+        if (added > 0 && skipped > 0) st('已添加 ' + added + ' 个附件，跳过 ' + skipped + ' 个重复/无效附件。', 'ok');
+        else if (added > 0) st('已选择 ' + state.files.length + ' 个附件。', 'ok');
+        else if (skipped > 0) st('未新增附件（均为重复或无效文件）。', 'err');
+      };
+      e.send.onclick = function () { if (state.sending) { st('请求进行中，请勿重复发送。', 'err'); return; } if (!canSendNow()) return; if (state.modelLoading) { st('模型列表加载中，请稍候发送。', 'err'); return; } send(); };
+      e.stop.onclick = function () { if (!state.ac) { st('当前没有进行中的请求。', 'err'); return; } state.ac.abort(); e.stop.disabled = true; e.stop.textContent = '中断中...'; st('正在中断请求...', 'ok'); };
+      function setLogPanelVisible(visible) { state.showLogs = !!visible; if (state.showLogs) { e.logPanel.classList.add('visible'); e.logToggle.textContent = '隐藏日志'; e.logToggle.classList.add('active'); e.logs.scrollTop = e.logs.scrollHeight; } else { e.logPanel.classList.remove('visible'); e.logToggle.textContent = '显示日志'; e.logToggle.classList.remove('active'); } }
+      e.logToggle.onclick = function () { if (state.sending || state.modelLoading) { st(state.sending ? '请求进行中，暂不能切换日志面板。' : '模型列表加载中，请稍候切换日志面板。', 'err'); return; } setLogPanelVisible(!state.showLogs); save(); };
+      e.clearLogs.onclick = function () { if (state.sending || state.modelLoading) { st(state.sending ? '请求进行中，暂不能清空日志。' : '模型列表加载中，请稍候清空日志。', 'err'); return; } var hadLogs = e.logs.childNodes.length > 0; e.logs.innerHTML = ''; st(hadLogs ? '日志已清空。' : '日志已为空。', 'ok'); };
+      e.downloadVideo.onclick = function () { if (state.sending || state.modelLoading) { st(state.sending ? '请求进行中，暂不能保存视频链接。' : '模型列表加载中，请稍候保存视频链接。', 'err'); return; } var url = (e.videoUrl.value || '').trim(); if (!url) { if (state.videoUrl) { state.videoUrl = ''; save(); addLog({ event: 'video.download.clear', timestamp: Date.now() }); st('已清除已保存的视频链接。', 'ok'); } else { st('当前未保存视频链接。', 'ok'); } return; } if (!/^https?:\/\//i.test(url)) { st('视频链接需以 http:// 或 https:// 开头。', 'err'); return; } state.videoUrl = url; save(); addLog({ event: 'video.download.set', timestamp: Date.now(), videoUrl: url }); st('视频链接已保存，将在日志模式请求中生效。', 'ok'); };
+      e.videoUrl.onkeydown = function (ev) { if (ev.key === 'Escape') { ev.preventDefault(); e.videoUrl.value = state.videoUrl || ''; st('已恢复已保存的视频链接。', 'ok'); return; } if (ev.key === 'Enter') { ev.preventDefault(); e.downloadVideo.click(); } };
+      e.clear.onclick = function () {
+        if (state.sending || state.modelLoading) {
+          st(state.sending ? '请求进行中，暂不能清空会话。' : '模型列表加载中，请稍候清空会话。', 'err');
+          return;
+        }
+        var hadSession = state.hist.length > 0 || state.files.length > 0 || !!(e.prompt.value || '').trim();
+        state.hist = [];
+        save();
+        state.files = [];
+        attRow();
+        rHist();
+        e.prompt.value = '';
+        syncSendEnabled();
+        st(hadSession ? '会话已清空。' : '会话已为空。', 'ok');
+        e.prompt.focus();
+      };
+      e.refreshModels.onclick = function () { if (state.sending) { st('请求进行中，暂不能刷新模型。', 'err'); return; } if (state.modelLoading) { st('模型列表加载中，请稍候。', 'ok'); return; } loadModels(); };
+      e.apiKey.addEventListener('blur', function () { if (state.sending || state.modelLoading) return; var key = (e.apiKey.value || '').trim(); var authKey = key ? ('k:' + key) : 'anon'; if (state.lastModelAuthKey === authKey) return; loadModels(); });
+      e.model.addEventListener('change', function () { state.preferredModel = (e.model.value || '').trim(); save(); });
+      e.apiKey.addEventListener('keydown', function (ev) { if (ev.key === 'Enter' && !ev.isComposing) { ev.preventDefault(); if (state.sending || state.modelLoading) return; var key = (e.apiKey.value || '').trim(); var authKey = key ? ('k:' + key) : 'anon'; if (state.lastModelAuthKey === authKey) return; loadModels(); } });
+      e.prompt.addEventListener('input', syncSendEnabled);
+      e.prompt.onkeydown = function (ev) { if (ev.key === 'Escape') { if (state.ac) { ev.preventDefault(); state.ac.abort(); e.stop.disabled = true; e.stop.textContent = '中断中...'; st('正在中断请求...', 'ok'); } return; } if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); if (state.sending) { st('请求进行中，请勿重复发送。', 'err'); return; } if (!canSendNow()) return; if (state.modelLoading) { st('模型列表加载中，请稍候发送。', 'err'); return; } send(); } };
       load();
       rHist();
-      loadModels();
+      setLogPanelVisible(state.showLogs);
+      syncSendEnabled();
       st('就绪。', 'ok');
+      loadModels();
     })();
   </script>
 </body>
@@ -710,7 +1159,7 @@ async function handleChatCompletions(body, authHeader, env) {
   const { model, messages, stream = true } = body;
   if (!messages?.length) {
     logChatDetail('netlify-edge', 'request.validation.failed', { reason: 'Messages are required' });
-    return jsonResponse({ error: { message: 'Messages are required' } }, 400);
+    return jsonResponse({ error: { message: 'Messages are required', type: 'invalid_request_error' } }, 400);
   }
   logChatDetail('netlify-edge', 'request.received', {
     stream: !!stream,
@@ -748,7 +1197,7 @@ async function handleChatCompletions(body, authHeader, env) {
     hasChatId: !!createData?.data?.id,
   });
   if (!createData.success || !createData.data?.id) {
-    return jsonResponse({ error: { message: 'Failed to create chat session', details: createData } }, 500);
+    return jsonResponse({ error: { message: 'Failed to create chat session', type: 'api_error', details: createData } }, 500);
   }
   const chatId = createData.data.id;
 
@@ -786,7 +1235,7 @@ async function handleChatCompletions(body, authHeader, env) {
 
   if (!chatResp.ok) {
     logChatDetail('netlify-edge', 'chat.completion.error', { status: chatResp.status, chatId });
-    return jsonResponse({ error: { message: await chatResp.text() } }, chatResp.status);
+    return jsonResponse({ error: { message: await chatResp.text(), type: 'api_error' } }, chatResp.status);
   }
   logChatDetail('netlify-edge', 'chat.completion.started', { status: chatResp.status, chatId, stream: !!stream });
 
@@ -804,24 +1253,27 @@ async function handleChatCompletions(body, authHeader, env) {
       const reader = chatResp.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
-      
+      let doneWritten = false;
+
       try {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          
+
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split('\n');
           buffer = lines.pop() || '';
-          
+
           for (const line of lines) {
-            if (!line.startsWith('data: ')) continue;
-            const data = line.slice(6).trim();
+            const trimmed = line.trimStart();
+            if (!trimmed.startsWith('data:')) continue;
+            const data = trimmed.slice(5).trim();
             if (data === '[DONE]') {
               await writer.write(encoder.encode('data: [DONE]\n\n'));
+              doneWritten = true;
               continue;
             }
-            
+
             try {
               const parsed = JSON.parse(data);
               if (parsed.choices?.[0]?.delta?.content) {
@@ -854,9 +1306,13 @@ async function handleChatCompletions(body, authHeader, env) {
             } catch {}
           }
         }
-        
-        await writer.write(encoder.encode('data: [DONE]\n\n'));
+      } catch (err) {
+        const message = err && err.message ? err.message : 'stream proxy error';
+        await writer.write(encoder.encode(`data: ${JSON.stringify({ error: { message, type: 'api_error' } })}\n\n`));
       } finally {
+        if (!doneWritten) {
+          await writer.write(encoder.encode('data: [DONE]\n\n'));
+        }
         await writer.close();
       }
     })();
@@ -882,8 +1338,9 @@ async function handleChatCompletions(body, authHeader, env) {
     buffer += decoder.decode(value, { stream: true });
   }
   for (const line of buffer.split('\n')) {
-    if (!line.startsWith('data: ')) continue;
-    const data = line.slice(6).trim();
+    const trimmed = line.trimStart();
+    if (!trimmed.startsWith('data:')) continue;
+    const data = trimmed.slice(5).trim();
     if (data === '[DONE]') continue;
     try {
       const parsed = JSON.parse(data);
@@ -900,6 +1357,47 @@ async function handleChatCompletions(body, authHeader, env) {
     choices: [{ index: 0, message: { role: 'assistant', content: chunks.join('') }, finish_reason: 'stop' }],
     usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
   });
+}
+
+async function handleChatCompletionsWithLogs(body, authHeader, env) {
+  const baseResponse = await handleChatCompletions(body, authHeader, env);
+  const contentType = String(baseResponse?.headers?.get('Content-Type') || '').toLowerCase();
+  if (!contentType.startsWith('text/event-stream') || !baseResponse?.body) {
+    return baseResponse;
+  }
+
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+  const encoder = new TextEncoder();
+  const reader = baseResponse.body.getReader();
+
+  (async () => {
+    try {
+      const logEvent = {
+        event: 'request.received',
+        timestamp: Date.now(),
+        model: body?.model || 'qwen3.5-plus',
+        messageCount: Array.isArray(body?.messages) ? body.messages.length : 0,
+        chatType: body?.chat_type || 't2t',
+        enableSearch: !!body?.enable_search,
+        ...(body?.video_url ? { videoUrl: body.video_url } : {}),
+      };
+      await writer.write(encoder.encode('event: log\n'));
+      await writer.write(encoder.encode(`data: ${JSON.stringify(logEvent)}\n\n`));
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        await writer.write(value);
+      }
+    } finally {
+      await writer.close();
+    }
+  })();
+
+  const headers = new Headers(baseResponse.headers);
+  headers.set('Content-Type', 'text/event-stream');
+  return new Response(readable, { status: baseResponse.status, headers });
 }
 
 // ============================================
@@ -921,14 +1419,33 @@ export default async function handler(request, context) {
   }
 
   const url = new URL(request.url);
-  const path = url.pathname;
+  const rawPath = url.pathname;
+  const apiPrefix = '/api';
+  const path = rawPath === apiPrefix
+    ? '/'
+    : (rawPath.startsWith(apiPrefix + '/') ? rawPath.slice(apiPrefix.length) : rawPath);
   const authHeader = request.headers.get('Authorization') || '';
 
-  if (request.method === 'GET' && path.includes('/v1/models')) {
+  if (request.method === 'GET' && path === '/v1/models') {
     return handleModels(authHeader, env);
   }
-  if (request.method === 'POST' && path.includes('/v1/chat/completions')) {
-    return handleChatCompletions(await request.json(), authHeader, env);
+  if (request.method === 'POST' && path === '/v1/chat/completions/log') {
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return jsonResponse({ error: { message: 'Invalid JSON body.', type: 'invalid_request_error' } }, 400);
+    }
+    return handleChatCompletionsWithLogs(body, authHeader, env);
+  }
+  if (request.method === 'POST' && path === '/v1/chat/completions') {
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return jsonResponse({ error: { message: 'Invalid JSON body.', type: 'invalid_request_error' } }, 400);
+    }
+    return handleChatCompletions(body, authHeader, env);
   }
   if (request.method === 'GET' && (path === '/chat' || path === '/chat/')) {
     return handleChatPage();
@@ -936,7 +1453,7 @@ export default async function handler(request, context) {
   if (request.method === 'GET' && (path === '/' || path === '')) {
     return new Response('<html><head><title>200 OK</title></head><body><center><h1>200 OK</h1></center><hr><center>nginx</center></body></html>', { headers: { 'Content-Type': 'text/html' } });
   }
-  return jsonResponse({ error: { message: 'Not found' } }, 404);
+  return jsonResponse({ error: { message: 'Not found', type: 'invalid_request_error' } }, 404);
 }
 
 export const config = {

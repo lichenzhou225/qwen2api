@@ -94,7 +94,9 @@ wrangler deploy
 | `CHAT_DETAIL_LOG` | 是否开启详细对话/上传日志（`true/1/on/yes` 开启，默认关闭） | 否 |
 | `JSON_BODY_LIMIT` | Express JSON 请求体大小上限（默认 `20mb`，仅本地/Docker 的 Express 运行时生效） | 否 |
 
-> **注意：** 所有模型现已默认开启联网搜索功能，`ENABLE_SEARCH` 变量已废弃。
+> **注意：** `ENABLE_SEARCH` 已不推荐使用。当前版本仍兼容读取该变量（`true` 时启用 `search`，否则使用 `t2t`），后续版本可能移除，请尽量不要依赖。
+>
+> **安全提示（API_TOKENS）：** 如果未配置 `API_TOKENS`，服务将允许无鉴权访问所有接口（`/v1/models`、`/v1/chat/completions` 等）。公网部署时强烈建议设置至少一个 token，并通过 `Authorization: Bearer <token>` 访问。
 
 ## 使用方法
 

@@ -165,6 +165,8 @@ function createStreamResponse(body) {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     },
     body,
   };
@@ -836,7 +838,7 @@ async function handleChatCompletions(body, authHeader, env, streamWriter) {
   const { model, messages, stream = true } = body;
   if (!messages?.length) {
     logChatDetail('core', 'request.validation.failed', { reason: 'Messages are required' });
-    return createResponse({ error: { message: 'Messages are required' } }, 400);
+    return createResponse({ error: { message: 'Messages are required', type: 'invalid_request_error' } }, 400);
   }
 
   logChatDetail('core', 'request.received', {
@@ -874,7 +876,7 @@ async function handleChatCompletions(body, authHeader, env, streamWriter) {
     hasChatId: !!createData?.data?.id,
   });
   if (!createData.success || !createData.data?.id) {
-    return createResponse({ error: { message: 'Failed to create chat session' } }, 500);
+    return createResponse({ error: { message: 'Failed to create chat session', type: 'api_error' } }, 500);
   }
   const chatId = createData.data.id;
 
@@ -915,7 +917,7 @@ async function handleChatCompletions(body, authHeader, env, streamWriter) {
 
   if (!chatResp.ok) {
     logChatDetail('core', 'chat.completion.error', { status: chatResp.status, chatId });
-    return createResponse({ error: { message: await chatResp.text() } }, chatResp.status);
+    return createResponse({ error: { message: await chatResp.text(), type: 'api_error' } }, chatResp.status);
   }
   logChatDetail('core', 'chat.completion.started', { status: chatResp.status, chatId, stream: !!stream });
 
@@ -938,8 +940,9 @@ async function handleChatCompletions(body, authHeader, env, streamWriter) {
     buffer += decoder.decode(value, { stream: true });
   }
   for (const line of buffer.split('\n')) {
-    if (!line.startsWith('data: ')) continue;
-    const data = line.slice(6).trim();
+    const trimmed = line.trimStart();
+    if (!trimmed.startsWith('data:')) continue;
+    const data = trimmed.slice(5).trim();
     if (data === '[DONE]') continue;
     try {
       const parsed = JSON.parse(data);
@@ -1175,7 +1178,7 @@ function createLogStreamWriter(writer, onDone = null) {
       }
     } catch (err) {
       const message = err && err.message ? err.message : 'stream proxy error';
-      writer.write(`data: ${JSON.stringify({ error: { message } })}\n\n`);
+      writer.write(`data: ${JSON.stringify({ error: { message, type: 'api_error' } })}\n\n`);
     } finally {
       if (!doneWritten) {
         writer.write('data: [DONE]\n\n');
@@ -1199,7 +1202,7 @@ async function handleChatCompletionsWithLogs(body, authHeader, env, streamWriter
 
   const { model, messages, stream = true } = body;
   if (!messages?.length) {
-    return createResponse({ error: { message: 'Messages are required' } }, 400);
+    return createResponse({ error: { message: 'Messages are required', type: 'invalid_request_error' } }, 400);
   }
 
   // 日志辅助函数
@@ -1238,7 +1241,7 @@ async function handleChatCompletionsWithLogs(body, authHeader, env, streamWriter
   const createData = await createResp.json();
   if (!createData.success || !createData.data?.id) {
     sendLog('chat.create.failed', { status: createResp.status });
-    return createResponse({ error: { message: 'Failed to create chat session' } }, 500);
+    return createResponse({ error: { message: 'Failed to create chat session', type: 'api_error' } }, 500);
   }
   const chatId = createData.data.id;
   sendLog('chat.created', { chatId });
@@ -1322,7 +1325,7 @@ async function handleChatCompletionsWithLogs(body, authHeader, env, streamWriter
 
   if (!chatResp.ok) {
     sendLog('chat.response.failed', { status: chatResp.status });
-    return createResponse({ error: { message: await chatResp.text() } }, chatResp.status);
+    return createResponse({ error: { message: await chatResp.text(), type: 'api_error' } }, chatResp.status);
   }
 
   sendLog('chat.streaming', {});
@@ -1359,8 +1362,9 @@ async function handleChatCompletionsWithLogs(body, authHeader, env, streamWriter
     buffer += decoder.decode(value, { stream: true });
   }
   for (const line of buffer.split('\n')) {
-    if (!line.startsWith('data: ')) continue;
-    const data = line.slice(6).trim();
+    const trimmed = line.trimStart();
+    if (!trimmed.startsWith('data:')) continue;
+    const data = trimmed.slice(5).trim();
     if (data === '[DONE]') continue;
     try {
       const parsed = JSON.parse(data);

@@ -38,7 +38,7 @@ function generateWebGLFingerprint() {
 async function generateCanvasFingerprint() {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
-  const hashBuffer = await crypto.subtle.digest('MD5', bytes);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', bytes);
   const hashArray = new Uint8Array(hashBuffer);
   return btoa(String.fromCharCode(...hashArray)).substring(0, 32);
 }
@@ -624,7 +624,7 @@ async function handleChatCompletions(body, authHeader, env) {
   const { model, messages, stream = true } = body;
   if (!messages?.length) {
     logChatDetail('cloudflare-worker', 'request.validation.failed', { reason: 'Messages are required' });
-    return jsonResponse({ error: { message: 'Messages are required' } }, 400);
+    return jsonResponse({ error: { message: 'Messages are required', type: 'invalid_request_error' } }, 400);
   }
   logChatDetail('cloudflare-worker', 'request.received', {
     stream: !!stream,
@@ -662,7 +662,7 @@ async function handleChatCompletions(body, authHeader, env) {
     hasChatId: !!createData?.data?.id,
   });
   if (!createData.success || !createData.data?.id) {
-    return jsonResponse({ error: { message: 'Failed to create chat session', details: createData } }, 500);
+    return jsonResponse({ error: { message: 'Failed to create chat session', type: 'api_error', details: createData } }, 500);
   }
   const chatId = createData.data.id;
 
@@ -700,7 +700,7 @@ async function handleChatCompletions(body, authHeader, env) {
 
   if (!chatResp.ok) {
     logChatDetail('cloudflare-worker', 'chat.completion.error', { status: chatResp.status, chatId });
-    return jsonResponse({ error: { message: await chatResp.text() } }, chatResp.status);
+    return jsonResponse({ error: { message: await chatResp.text(), type: 'api_error' } }, chatResp.status);
   }
   logChatDetail('cloudflare-worker', 'chat.completion.started', { status: chatResp.status, chatId, stream: !!stream });
 
@@ -718,24 +718,27 @@ async function handleChatCompletions(body, authHeader, env) {
       const reader = chatResp.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
-      
+      let doneWritten = false;
+
       try {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          
+
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split('\n');
           buffer = lines.pop() || '';
-          
+
           for (const line of lines) {
-            if (!line.startsWith('data: ')) continue;
-            const data = line.slice(6).trim();
+            const trimmed = line.trimStart();
+            if (!trimmed.startsWith('data:')) continue;
+            const data = trimmed.slice(5).trim();
             if (data === '[DONE]') {
               await writer.write(encoder.encode('data: [DONE]\n\n'));
+              doneWritten = true;
               continue;
             }
-            
+
             try {
               const parsed = JSON.parse(data);
               if (parsed.choices?.[0]?.delta?.content) {
@@ -768,9 +771,13 @@ async function handleChatCompletions(body, authHeader, env) {
             } catch {}
           }
         }
-        
-        await writer.write(encoder.encode('data: [DONE]\n\n'));
+      } catch (err) {
+        const message = err && err.message ? err.message : 'stream proxy error';
+        await writer.write(encoder.encode(`data: ${JSON.stringify({ error: { message, type: 'api_error' } })}\n\n`));
       } finally {
+        if (!doneWritten) {
+          await writer.write(encoder.encode('data: [DONE]\n\n'));
+        }
         await writer.close();
       }
     })();
@@ -796,8 +803,9 @@ async function handleChatCompletions(body, authHeader, env) {
     buffer += decoder.decode(value, { stream: true });
   }
   for (const line of buffer.split('\n')) {
-    if (!line.startsWith('data: ')) continue;
-    const data = line.slice(6).trim();
+    const trimmed = line.trimStart();
+    if (!trimmed.startsWith('data:')) continue;
+    const data = trimmed.slice(5).trim();
     if (data === '[DONE]') continue;
     try {
       const parsed = JSON.parse(data);
@@ -816,6 +824,47 @@ async function handleChatCompletions(body, authHeader, env) {
   });
 }
 
+async function handleChatCompletionsWithLogs(body, authHeader, env) {
+  const baseResponse = await handleChatCompletions(body, authHeader, env);
+  const contentType = String(baseResponse?.headers?.get('Content-Type') || '').toLowerCase();
+  if (!contentType.startsWith('text/event-stream') || !baseResponse?.body) {
+    return baseResponse;
+  }
+
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+  const encoder = new TextEncoder();
+  const reader = baseResponse.body.getReader();
+
+  (async () => {
+    try {
+      const logEvent = {
+        event: 'request.received',
+        timestamp: Date.now(),
+        model: body?.model || 'qwen3.5-plus',
+        messageCount: Array.isArray(body?.messages) ? body.messages.length : 0,
+        chatType: body?.chat_type || 't2t',
+        enableSearch: !!body?.enable_search,
+        ...(body?.video_url ? { videoUrl: body.video_url } : {}),
+      };
+      await writer.write(encoder.encode('event: log\n'));
+      await writer.write(encoder.encode(`data: ${JSON.stringify(logEvent)}\n\n`));
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        await writer.write(value);
+      }
+    } finally {
+      await writer.close();
+    }
+  })();
+
+  const headers = new Headers(baseResponse.headers);
+  headers.set('Content-Type', 'text/event-stream');
+  return new Response(readable, { status: baseResponse.status, headers });
+}
+
 // ============================================
 // Worker 入口
 // ============================================
@@ -830,14 +879,33 @@ export default {
     }
 
     const url = new URL(request.url);
-    const path = url.pathname;
+    const rawPath = url.pathname;
+    const apiPrefix = '/api';
+    const path = rawPath === apiPrefix
+      ? '/'
+      : (rawPath.startsWith(apiPrefix + '/') ? rawPath.slice(apiPrefix.length) : rawPath);
     const authHeader = request.headers.get('Authorization') || '';
 
-    if (request.method === 'GET' && path.includes('/v1/models')) {
+    if (request.method === 'GET' && path === '/v1/models') {
       return handleModels(authHeader, env);
     }
-    if (request.method === 'POST' && path.includes('/v1/chat/completions')) {
-      return handleChatCompletions(await request.json(), authHeader, env);
+    if (request.method === 'POST' && path === '/v1/chat/completions/log') {
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return jsonResponse({ error: { message: 'Invalid JSON body.', type: 'invalid_request_error' } }, 400);
+      }
+      return handleChatCompletionsWithLogs(body, authHeader, env);
+    }
+    if (request.method === 'POST' && path === '/v1/chat/completions') {
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return jsonResponse({ error: { message: 'Invalid JSON body.', type: 'invalid_request_error' } }, 400);
+      }
+      return handleChatCompletions(body, authHeader, env);
     }
     if (request.method === 'GET' && (path === '/chat' || path === '/chat/')) {
       return handleChatPage();
@@ -845,6 +913,6 @@ export default {
     if (request.method === 'GET' && (path === '/' || path === '')) {
       return new Response('<html><head><title>200 OK</title></head><body><center><h1>200 OK</h1></center><hr><center>nginx</center></body></html>', { headers: { 'Content-Type': 'text/html' } });
     }
-    return jsonResponse({ error: { message: 'Not found' } }, 404);
+    return jsonResponse({ error: { message: 'Not found', type: 'invalid_request_error' } }, 404);
   }
 };
