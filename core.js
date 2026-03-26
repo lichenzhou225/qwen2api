@@ -417,9 +417,34 @@ function tryParseOpenAiImageSize(size) {
   return { width, height };
 }
 
+function tryParseRatioString(size) {
+  const text = normalizeInputString(size);
+  if (!text) return null;
+  const m = text.toLowerCase().match(/^(\d{1,2}):(\d{1,2})$/);
+  if (!m) return null;
+  const w = Number(m[1]);
+  const h = Number(m[2]);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
+  return `${w}:${h}`;
+}
+
 function mapOpenAiImageSizeToQwenRatio(size) {
   // Qwen Web t2i 在抓包中使用 ratio 文本，例如 "16:9"。
-  // 这里把 OpenAI 的 "1024x1024" 映射到常见比例，无法匹配时默认 1:1。
+  // 支持两种格式：
+  // 1. 直接比例字符串："1:1", "16:9", "9:16", "4:3", "3:4"
+  // 2. OpenAI 格式："1024x1024" (映射到最接近的比例)
+  
+  // 首先尝试直接解析比例字符串
+  const ratio = tryParseRatioString(size);
+  if (ratio) {
+    // 验证是否为支持的比例
+    const validRatios = ['1:1', '16:9', '9:16', '4:3', '3:4'];
+    if (validRatios.includes(ratio)) {
+      return ratio;
+    }
+  }
+  
+  // 否则尝试解析 OpenAI 尺寸格式并映射到最近比例
   const parsed = tryParseOpenAiImageSize(size);
   if (!parsed) return '1:1';
   const { width, height } = parsed;
@@ -1151,8 +1176,9 @@ async function handleImageGenerations(body, authHeader, env) {
           output_schema: 'phase',
           research_mode: 'normal',
           auto_thinking: true,
+          thinking_mode: 'Auto',
           thinking_format: 'summary',
-          auto_search: false,
+          auto_search: true,
         },
         extra: { meta: { subChatType: 't2i' } },
         sub_chat_type: 't2i',
@@ -1375,14 +1401,14 @@ function handleRoot() {
   return createResponse(html, 200, { 'Content-Type': 'text/html' });
 }
 
-// Chat HTML 缓存
+// Chat HTML 缓存 (开发模式禁用缓存)
 let chatHtmlCache = null;
 
 function getChatHtml() {
-  if (chatHtmlCache) return chatHtmlCache;
   const fs = require('fs');
   const path = require('path');
   const htmlPath = path.join(__dirname, 'chat.html');
+  // 开发模式下每次都重新读取文件
   chatHtmlCache = fs.readFileSync(htmlPath, 'utf-8');
   return chatHtmlCache;
 }

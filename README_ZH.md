@@ -10,7 +10,9 @@
 - 🚀 支持流式响应 (SSE)
 - 🔐 可选的 API Token 认证
 - 🌐 多平台部署支持
-- 🖼️📄 支持图片与文档解析
+- 🖼️ 支持图片生成
+- 🎬📄 支持视频解析、图片与文档解析
+- 💬 内置 Web 聊天界面
 
 ## 部署方式
 
@@ -113,6 +115,7 @@ wrangler deploy
 |------|------|------|
 | `/v1/models` | GET | 获取模型列表 |
 | `/v1/chat/completions` | POST | 聊天完成 |
+| `/v1/images/generations` | POST | 图片生成 |
 | `/chat` | GET | 内置 Web 聊天页面 |
 | `/` | GET | 健康检查 |
 
@@ -140,6 +143,82 @@ curl https://your-domain/v1/chat/completions \
     "messages": [{"role": "user", "content": "Hello!"}],
     "stream": true
   }'
+
+# 图片生成（比例字符串格式）
+curl https://your-domain/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your_token" \
+  -d '{
+    "model": "qwen3.5-plus",
+    "prompt": "一只可爱的小猫在花园里",
+    "n": 1,
+    "size": "1:1",
+    "response_format": "url"
+  }'
+
+# 图片生成（OpenAI 尺寸格式）
+curl https://your-domain/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your_token" \
+  -d '{
+    "model": "qwen3.5-plus",
+    "prompt": "一片壮丽的山水风景",
+    "n": 1,
+    "size": "1024x1024",
+    "response_format": "b64_json"
+  }'
+```
+
+### 图片生成参数说明
+
+#### 请求参数
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `model` | string | 否 | 模型名称，默认为 `qwen3.5-plus` |
+| `prompt` | string | 是 | 图片描述文本 |
+| `n` | number | 否 | 生成图片数量，默认为 1，最大 10 |
+| `size` | string | 否 | 图片尺寸/比例，默认为 `1:1` |
+| `response_format` | string | 否 | 响应格式：`url`（默认）或 `b64_json` |
+
+#### size 参数支持的格式
+
+**格式 1：比例字符串（推荐）**
+- `1:1` - 正方形
+- `16:9` - 宽屏（横向）
+- `9:16` - 竖屏（纵向）
+- `4:3` - 传统比例（横向）
+- `3:4` - 传统比例（纵向）
+
+**格式 2：OpenAI 兼容的尺寸格式**
+- `1024x1024` - 会自动映射到最接近的比例（1:1）
+- `1920x1080` - 会自动映射到最接近的比例（16:9）
+- 其他任何宽高组合都会自动映射到支持的比例
+
+#### 响应格式
+
+**url 格式（默认）：**
+```json
+{
+  "created": 1234567890,
+  "data": [
+    {
+      "url": "https://example.com/image.png"
+    }
+  ]
+}
+```
+
+**b64_json 格式：**
+```json
+{
+  "created": 1234567890,
+  "data": [
+    {
+      "b64_json": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ..."
+    }
+  ]
+}
 ```
 
 ### OpenAI SDK 示例

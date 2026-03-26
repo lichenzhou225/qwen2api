@@ -1620,7 +1620,7 @@ async function handleImageGenerations(body, authHeader, env) {
       messages: [{
         fid: uuidv4(), parentId: null, childrenIds: [uuidv4()], role: 'user', content: finalPrompt,
         user_action: 'chat', files: [], timestamp: Date.now(), models: [actualModel], chat_type: 't2i',
-        feature_config: { thinking_enabled: true, output_schema: 'phase', research_mode: 'normal', auto_thinking: true, thinking_format: 'summary', auto_search: false },
+        feature_config: { thinking_enabled: true, output_schema: 'phase', research_mode: 'normal', auto_thinking: true, thinking_mode: 'Auto', thinking_format: 'summary', auto_search: true },
         extra: { meta: { subChatType: 't2i' } }, sub_chat_type: 't2i', parent_id: null,
       }],
       timestamp: Date.now(),

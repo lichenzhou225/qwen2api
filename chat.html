@@ -397,7 +397,6 @@
         <select id="model" class="grow"><option value="qwen3.5-plus">qwen3.5-plus</option></select>
         <button id="refreshModels" class="btn" type="button">刷新模型</button>
         <button id="logToggle" class="log-toggle" type="button">显示日志</button>
-        <button id="clear" class="warn" type="button">清空会话</button>
       </div>
     </header>
 
@@ -406,6 +405,30 @@
         <span class="video-tag" id="videoTag">视频分析（可选）</span>
         <input id="videoUrl" type="text" placeholder="粘贴视频链接；发送时自动进入视频分析；留空则普通对话" autocomplete="off" spellcheck="false" />
         <button id="clearVideo" class="video-clear" type="button">清空</button>
+      </div>
+    </section>
+
+    <section class="panel video-panel" aria-label="图片生成">
+      <div class="video-row">
+        <span class="video-tag" id="imageGenTag">图片生成</span>
+        <select id="imageGenMode" style="flex: 0 0 auto; min-width: 120px;">
+          <option value="chat">聊天模式</option>
+          <option value="image">图片生成</option>
+        </select>
+        <select id="imageSize" style="flex: 0 0 auto; min-width: 120px;">
+          <option value="1:1">1:1 (正方形)</option>
+          <option value="16:9">16:9 (宽屏)</option>
+          <option value="9:16">9:16 (竖屏)</option>
+          <option value="4:3">4:3 (传统)</option>
+          <option value="3:4">3:4 (传统竖)</option>
+        </select>
+        <select id="imageCount" style="flex: 0 0 auto; min-width: 80px;">
+          <option value="1">1张</option>
+          <option value="2">2张</option>
+          <option value="3">3张</option>
+          <option value="4">4张</option>
+          <option value="5">5张</option>
+        </select>
       </div>
     </section>
 
@@ -427,10 +450,20 @@
         <input id="files" class="file" type="file" multiple accept=".pdf,.doc,.docx,.dot,.csv,.xlsx,.xls,.txt,.text,.md,.js,.mjs,.ts,.jsx,.tsx,.vue,.html,.htm,.css,.svg,.svgz,.xml,.json,.jsonc,.wasm,.tex,.latex,.c,.h,.cc,.cxx,.cpp,.hpp,.hh,.hxx,.ino,.java,.kt,.kts,.scala,.groovy,.go,.rs,.swift,.php,.rb,.cs,.vb,.fs,.csproj,.sln,.sql,.lua,.r,.pl,.tcl,.awk,.fish,.yaml,.yml,.toml,.ini,.sh,.bat,.cmd,.dockerfile,.containerfile,.proto,.thrift,.graphql,.gql,.qmd,.smali,.gif,.webp,.jpg,.jpeg,.png,.bmp,.icns,.jp2,.sgi,.tif,.tiff,.mkv,.mov,.wav,.mp3,.m4a,.amr,.aac,image/*,audio/*,video/*" />
         <button id="send" class="primary" type="button">发送</button>
         <button id="stop" class="btn" type="button" disabled>中断</button>
+        <button id="clear" class="warn" type="button">清空会话</button>
       </div>
       <div id="atts"></div>
       <div id="status" class="status"></div>
     </section>
+    
+    <footer style="text-align: center; padding: 16px; margin-top: 8px;">
+      <a href="https://github.com/smanx/qwen2api" target="_blank" rel="noopener noreferrer" style="display: inline-flex; align-items: center; gap: 8px; text-decoration: none; color: var(--muted); font-size: 14px; padding: 10px 16px; border-radius: 12px; border: 1px solid var(--border); background: var(--panel); transition: all 140ms ease;">
+        <svg viewBox="0 0 24 24" style="width: 20px; height: 20px; fill: currentColor;">
+          <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+        </svg>
+        <span>GitHub</span>
+      </a>
+    </footer>
   </main>
   <script>
     (function () {
@@ -445,7 +478,7 @@
       var SHOW_LOGS_KEY = 'qwen2api.chat.showLogs.v1';
       var MODEL_KEY = 'qwen2api.chat.model.v1';
       var LANG_KEY = 'qwen2api.chat.lang.v1';
-      var state = { hist: [], files: [], ac: null, sending: false, showLogs: false, videoUrl: '', modelLoadId: 0, modelLoading: false, preferredModel: '', lastModelAuthKey: null };
+      var state = { hist: [], files: [], ac: null, sending: false, showLogs: false, videoUrl: '', modelLoadId: 0, modelLoading: false, preferredModel: '', lastModelAuthKey: null, imageGenMode: 'chat' };
       var API_BASE = (function () {
         var p = (location && location.pathname) ? location.pathname : '';
         if (p === '/.netlify/functions/api' || p.indexOf('/.netlify/functions/api/') === 0) return '/.netlify/functions/api';
@@ -475,7 +508,10 @@
         atts: document.getElementById('atts'),
         send: document.getElementById('send'),
         stop: document.getElementById('stop'),
-        status: document.getElementById('status')
+        status: document.getElementById('status'),
+        imageGenMode: document.getElementById('imageGenMode'),
+        imageSize: document.getElementById('imageSize'),
+        imageCount: document.getElementById('imageCount')
       };
 
       function getPreferredLang() {
@@ -843,10 +879,17 @@
           thinkWrap.appendChild(thinkPre);
 
           var finalDiv = document.createElement('div');
+          var imageContainer = document.createElement('div');
+          imageContainer.style.display = 'flex';
+          imageContainer.style.flexWrap = 'wrap';
+          imageContainer.style.gap = '10px';
+          imageContainer.style.marginTop = '10px';
+          
           body.appendChild(thinkWrap);
           body.appendChild(finalDiv);
+          body.appendChild(imageContainer);
 
-          function setAssistantRaw(rawText) {
+          function setAssistantRaw(rawText, imageUrls) {
             var sp = splitThinking(rawText);
             if (sp.think) {
               thinkWrap.style.display = '';
@@ -856,6 +899,22 @@
               thinkPre.textContent = '';
             }
             finalDiv.textContent = sp.final || '';
+            
+            if (imageUrls && imageUrls.length > 0) {
+              imageContainer.innerHTML = '';
+              for (var i = 0; i < imageUrls.length; i++) {
+                var img = document.createElement('img');
+                img.src = imageUrls[i];
+                img.style.maxWidth = '100%';
+                img.style.maxHeight = '400px';
+                img.style.borderRadius = '8px';
+                img.style.cursor = 'pointer';
+                img.onclick = function() {
+                  window.open(this.src, '_blank');
+                };
+                imageContainer.appendChild(img);
+              }
+            }
           }
 
           setAssistantRaw(text || '');
@@ -878,7 +937,10 @@
           if (typeof content !== 'string' && !Array.isArray(content)) continue;
           var preview = summarizeMessageContent(content);
           if (!preview || !String(preview).trim()) preview = x.role === 'assistant' ? t('emptyAssistant') : t('attachMsg');
-          msg(x.role, preview, i);
+          var msgObj = msg(x.role, preview, i);
+          if (x.role === 'assistant' && x.imageUrls && x.imageUrls.length > 0 && msgObj && msgObj.setRaw) {
+            msgObj.setRaw(preview, x.imageUrls);
+          }
         }
         syncRetryEnabled();
       }
@@ -907,6 +969,9 @@
         e.clearVideo.disabled = b;
         e.apiKey.disabled = b;
         e.model.disabled = b;
+        e.imageGenMode.disabled = b;
+        e.imageSize.disabled = b;
+        e.imageCount.disabled = b;
         e.send.textContent = b ? t('sending') : t('send');
         attRow();
       }
@@ -919,9 +984,9 @@
           (function (idx) {
             var w = document.createElement('div');
             w.className = 'fi';
-            var t = document.createElement('div');
+            var textDiv = document.createElement('div');
             var f = state.files[idx];
-            t.textContent = f.name + ' (' + bfmt(f.size) + ')';
+            textDiv.textContent = f.name + ' (' + bfmt(f.size) + ')';
             var rm = document.createElement('button');
             rm.type = 'button';
             rm.textContent = t('remove');
@@ -934,7 +999,7 @@
               state.files.splice(idx, 1);
               attRow();
             };
-            w.appendChild(t);
+            w.appendChild(textDiv);
             w.appendChild(rm);
             e.atts.appendChild(w);
           })(i);
@@ -1282,6 +1347,84 @@
             st(t('inputOrFileRequired'), 'err');
             return;
           }
+        }
+
+        var model = (e.model.value || '').trim() || 'qwen3.5-plus';
+        var key = (e.apiKey.value || '').trim();
+        
+        var imageGenMode = e.imageGenMode.value;
+        if (imageGenMode === 'image') {
+          var imageSize = e.imageSize.value;
+          var imageCount = parseInt(e.imageCount.value, 10) || 1;
+          
+          msg('user', text, state.hist.length);
+          var aMsg = msg('assistant', '');
+          
+          state.sending = true;
+          state.ac = new AbortController();
+          busy(true);
+          st('正在生成图片...', 'ok');
+          
+          try {
+            var h = { 'Content-Type': 'application/json' };
+            if (key) h.Authorization = 'Bearer ' + key;
+            
+            var endpoint = apiUrl('/v1/images/generations');
+            var reqBody = { 
+              model: model, 
+              prompt: text, 
+              n: imageCount, 
+              size: imageSize,
+              response_format: 'url'
+            };
+            
+            var resp = await fetch(endpoint, {
+              method: 'POST',
+              headers: h,
+              body: JSON.stringify(reqBody),
+              signal: state.ac.signal
+            });
+            
+            if (!resp.ok) {
+              var apiErr = await readErrorPayload(resp);
+              throw new Error(emsg(resp.status, apiErr.txt, apiErr.json));
+            }
+            
+            var data = await resp.json();
+            var imageUrls = (data.data || []).map(function(item) { return item.url; });
+            
+            var resultText = '图片生成完成！点击图片可在新窗口打开。';
+            if (aMsg && aMsg.setRaw) aMsg.setRaw(resultText, imageUrls);
+            
+            e.messages.scrollTop = e.messages.scrollHeight;
+            state.hist.push({ role: 'user', content: text });
+            state.hist.push({ role: 'assistant', content: resultText, imageUrls: imageUrls });
+            if (state.hist.length > MAX_HISTORY) state.hist = state.hist.slice(-MAX_HISTORY);
+            save();
+            e.prompt.value = '';
+            attRow();
+            st('图片生成完成！', 'ok');
+            return;
+          } catch (err) {
+            if (err && err.name === 'AbortError') {
+              st(t('aborted'), 'err');
+              if (aMsg && aMsg.setRaw) aMsg.setRaw(t('abortedTag'));
+            } else {
+              var m = (err && err.message) || t('requestFailed');
+              st(m, 'err');
+              if (aMsg && aMsg.setRaw) aMsg.setRaw(t('errorTag') + ' ' + m);
+            }
+            state.hist.push({ role: 'user', content: text });
+            state.hist.push({ role: 'assistant', content: (err && err.name === 'AbortError') ? t('abortedTag') : (t('errorTag') + ' ' + t('requestFailed')) });
+            if (state.hist.length > MAX_HISTORY) state.hist = state.hist.slice(-MAX_HISTORY);
+            save();
+          } finally {
+            state.ac = null;
+            state.sending = false;
+            busy(false);
+            e.prompt.focus();
+          }
+          return;
         }
 
         var model = (e.model.value || '').trim() || 'qwen3.5-plus';

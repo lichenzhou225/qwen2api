@@ -19,7 +19,9 @@ A proxy service that converts Qwen Chat to an OpenAI-compatible API.
 - 🚀 Streaming response support (SSE)
 - 🔐 Optional API Token authentication
 - 🌐 Multi-platform deployment support
-- 🖼️📄 Supports image and document parsing
+- 🖼️ Image generation support
+- 🎬📄 Video analysis, image and document parsing support
+- 💬 Built-in web chat interface
 
 ## Deployment
 
@@ -127,6 +129,7 @@ The proxy also accepts legacy message-level `files` / `attachments` arrays for c
 |----------|--------|-------------|
 | `/v1/models` | GET | Get model list |
 | `/v1/chat/completions` | POST | Chat completion |
+| `/v1/images/generations` | POST | Image generation |
 | `/chat` | GET | Built-in web chat UI |
 | `/` | GET | Health check |
 
@@ -154,6 +157,82 @@ curl https://your-domain/v1/chat/completions \
     "messages": [{"role": "user", "content": "Hello!"}],
     "stream": true
   }'
+
+# Image generation (ratio string format)
+curl https://your-domain/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your_token" \
+  -d '{
+    "model": "qwen3.5-plus",
+    "prompt": "A cute kitten in a garden",
+    "n": 1,
+    "size": "1:1",
+    "response_format": "url"
+  }'
+
+# Image generation (OpenAI size format)
+curl https://your-domain/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your_token" \
+  -d '{
+    "model": "qwen3.5-plus",
+    "prompt": "A beautiful landscape",
+    "n": 1,
+    "size": "1024x1024",
+    "response_format": "b64_json"
+  }'
+```
+
+### Image Generation Parameter Reference
+
+#### Request Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `model` | string | No | Model name, default: `qwen3.5-plus` |
+| `prompt` | string | Yes | Image description text |
+| `n` | number | No | Number of images to generate, default: 1, max: 10 |
+| `size` | string | No | Image size/ratio, default: `1:1` |
+| `response_format` | string | No | Response format: `url` (default) or `b64_json` |
+
+#### Supported size parameter formats
+
+**Format 1: Ratio string (recommended)**
+- `1:1` - Square
+- `16:9` - Widescreen (landscape)
+- `9:16` - Portrait (vertical)
+- `4:3` - Traditional ratio (landscape)
+- `3:4` - Traditional ratio (portrait)
+
+**Format 2: OpenAI compatible size format**
+- `1024x1024` - Automatically maps to closest ratio (1:1)
+- `1920x1080` - Automatically maps to closest ratio (16:9)
+- Any other width/height combination will automatically map to a supported ratio
+
+#### Response Formats
+
+**url format (default):**
+```json
+{
+  "created": 1234567890,
+  "data": [
+    {
+      "url": "https://example.com/image.png"
+    }
+  ]
+}
+```
+
+**b64_json format:**
+```json
+{
+  "created": 1234567890,
+  "data": [
+    {
+      "b64_json": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ..."
+    }
+  ]
+}
 ```
 
 ### OpenAI SDK Examples
