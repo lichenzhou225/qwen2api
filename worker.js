@@ -200,6 +200,17 @@ function normalizeInputString(value) {
   return trimmed;
 }
 
+function tryParseRatioString(size) {
+  const text = normalizeInputString(size);
+  if (!text) return null;
+  const m = text.toLowerCase().match(/^(\d+)\s*:\s*(\d+)$/);
+  if (!m) return null;
+  const w = Number(m[1]);
+  const h = Number(m[2]);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
+  return `${w}:${h}`;
+}
+
 function normalizeReasoningFragments(value) {
   if (typeof value === 'string') {
     const text = normalizeReasoningString(value);
@@ -1103,6 +1114,11 @@ function tryParseOpenAiImageSize(size) {
 }
 
 function mapOpenAiImageSizeToQwenRatio(size) {
+  const ratio = tryParseRatioString(size);
+  if (ratio) {
+    const validRatios = ['1:1', '16:9', '9:16', '4:3', '3:4'];
+    if (validRatios.includes(ratio)) return ratio;
+  }
   const parsed = tryParseOpenAiImageSize(size);
   if (!parsed) return '1:1';
   const { width, height } = parsed;

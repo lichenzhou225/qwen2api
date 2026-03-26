@@ -108,7 +108,23 @@ function tryParseOpenAiImageSize(size) {
   return { width, height };
 }
 
+function tryParseRatioString(size) {
+  const text = normalizeInputString(size);
+  if (!text) return null;
+  const m = text.toLowerCase().match(/^(\d+)\s*:\s*(\d+)$/);
+  if (!m) return null;
+  const w = Number(m[1]);
+  const h = Number(m[2]);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
+  return `${w}:${h}`;
+}
+
 function mapOpenAiImageSizeToQwenRatio(size) {
+  const ratio = tryParseRatioString(size);
+  if (ratio) {
+    const validRatios = ['1:1', '16:9', '9:16', '4:3', '3:4'];
+    if (validRatios.includes(ratio)) return ratio;
+  }
   const parsed = tryParseOpenAiImageSize(size);
   if (!parsed) return '1:1';
   const { width, height } = parsed;
@@ -185,85 +201,466 @@ function handleChatPage() {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Qwen2API Chat</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap" rel="stylesheet" />
   <style>
-    body { font-family: Arial, sans-serif; margin: 0; background: #f6f7fb; }
-    main { max-width: 920px; margin: 0 auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
-    section { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; }
-    .content-row { display: flex; gap: 10px; }
-    .content-row > section { flex: 1; }
-    #messages { flex: 1; min-height: 52vh; max-height: 62vh; overflow: auto; }
-    .msg { padding: 8px; border-radius: 8px; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; margin: 8px 0; }
-    .msg-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; font-size: 12px; opacity: 0.8; }
-    .mini { padding: 2px 8px; font-size: 12px; }
-    .u { background: #e8f0ff; }
-    .a { background: #f3f4f6; }
-    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-    input, select, textarea, button { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid #d1d5db; }
-    textarea { width: 100%; min-height: 90px; }
-    select, input[type=text] { flex: 1; min-width: 180px; }
-    .primary { background: #2563eb; color: #fff; border-color: #2563eb; }
-    .warn { background: #ef4444; color: #fff; border-color: #ef4444; }
-    .status { font-size: 13px; min-height: 20px; }
-    .err { color: #b91c1c; }
-    .ok { color: #047857; }
-    .fi { display: flex; justify-content: space-between; align-items: center; border: 1px solid #e5e7eb; border-radius: 6px; padding: 6px; margin-top: 6px; }
-    .log-panel { width: 320px; display: none; }
-    .log-panel.visible { display: flex; flex-direction: column; }
-    .video-input-row { display: none; margin-bottom: 8px; }
-    .log-panel.visible .video-input-row { display: flex; gap: 6px; }
-    .video-input-row input { flex: 1; font-size: 12px; padding: 6px; }
-    .video-input-row button { font-size: 12px; padding: 6px 10px; background: #10b981; color: #fff; border-color: #10b981; }
-    #logs { min-height: 48vh; max-height: 58vh; overflow: auto; font-size: 12px; font-family: monospace; background: #1e1e1e; color: #d4d4d4; border-radius: 6px; padding: 8px; }
-    .log-entry { padding: 2px 0; border-bottom: 1px solid #333; }
+    :root {
+      color-scheme: light;
+      --page-bg: #f6f7fb;
+      --ink: #0f172a;
+      --muted: #475569;
+      --panel: rgba(255, 255, 255, 0.88);
+      --panel-2: rgba(255, 255, 255, 0.72);
+      --border: rgba(15, 23, 42, 0.10);
+      --shadow: 0 18px 42px rgba(15, 23, 42, 0.10);
+      --shadow-soft: 0 10px 24px rgba(15, 23, 42, 0.08);
+      --ring: 0 0 0 4px rgba(14, 165, 164, 0.18);
+      --accent: #0ea5a4;
+      --accent-2: #16a34a;
+      --danger: #ef4444;
+      --radius: 14px;
+      --radius-sm: 10px;
+      --empty-hint: "开始对话吧。支持粘贴文本、上传文件，Enter 发送。";
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(1200px 700px at 15% 10%, rgba(14, 165, 164, 0.14), transparent 55%),
+        radial-gradient(900px 520px at 85% 20%, rgba(34, 197, 94, 0.10), transparent 60%),
+        radial-gradient(1000px 600px at 50% 100%, rgba(56, 189, 248, 0.10), transparent 55%),
+        var(--page-bg);
+      font-family: "Noto Sans SC", system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      letter-spacing: 0.1px;
+    }
+
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 18px 14px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 100vh;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-soft);
+      backdrop-filter: blur(10px);
+    }
+
+    .topbar {
+      padding: 12px;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .brand {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 150px;
+    }
+    .brand b {
+      font-family: "Space Grotesk", "Noto Sans SC", sans-serif;
+      font-size: 16px;
+      letter-spacing: 0.3px;
+    }
+    .brand span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .controls {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .controls .grow { flex: 1; min-width: 160px; }
+
+    input, select, textarea, button {
+      font: inherit;
+      border-radius: 12px;
+      border: 1px solid rgba(15, 23, 42, 0.14);
+      background: rgba(255, 255, 255, 0.75);
+      color: var(--ink);
+      outline: none;
+    }
+
+    input, select, button { padding: 10px 11px; }
+    textarea { padding: 12px 12px; width: 100%; min-height: 96px; resize: vertical; }
+
+    input:focus, select:focus, textarea:focus { box-shadow: var(--ring); border-color: rgba(14, 165, 164, 0.55); }
+    button { cursor: pointer; transition: transform 140ms ease, box-shadow 140ms ease, background-color 140ms ease; }
+    button:disabled { cursor: not-allowed; opacity: 0.6; }
+    button:active:not(:disabled) { transform: translateY(1px); }
+
+    .btn {
+      background: rgba(255, 255, 255, 0.75);
+    }
+    .primary {
+      background: linear-gradient(135deg, #0ea5a4, #22c55e);
+      color: #ffffff;
+      border-color: rgba(14, 165, 164, 0.55);
+      box-shadow: 0 10px 22px rgba(14, 165, 164, 0.18);
+    }
+    .primary:hover:not(:disabled) { box-shadow: 0 14px 28px rgba(14, 165, 164, 0.22); }
+    .warn {
+      background: rgba(239, 68, 68, 0.10);
+      color: #991b1b;
+      border-color: rgba(239, 68, 68, 0.35);
+    }
+    .warn:hover:not(:disabled) { background: rgba(239, 68, 68, 0.14); }
+
+    .log-toggle {
+      background: rgba(15, 23, 42, 0.06);
+      border-color: rgba(15, 23, 42, 0.14);
+    }
+    .log-toggle.active {
+      background: rgba(14, 165, 164, 0.12);
+      border-color: rgba(14, 165, 164, 0.35);
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
+      align-items: stretch;
+      min-height: 58vh;
+    }
+
+    .shell.has-logs { grid-template-columns: 1fr; }
+    @media (min-width: 981px) {
+      .shell.has-logs { grid-template-columns: 1fr 360px; }
+    }
+
+    #messages {
+      padding: 14px;
+      overflow: auto;
+      min-height: 56vh;
+      max-height: 62vh;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    #messages:empty::before {
+      content: var(--empty-hint);
+      color: rgba(71, 85, 105, 0.9);
+      background: rgba(255, 255, 255, 0.55);
+      border: 1px dashed rgba(15, 23, 42, 0.18);
+      border-radius: 14px;
+      padding: 14px 14px;
+      line-height: 1.5;
+    }
+
+    .msg {
+      max-width: min(760px, 92%);
+      padding: 10px 12px;
+      border-radius: 16px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      border: 1px solid rgba(15, 23, 42, 0.10);
+      animation: popIn 220ms ease both;
+    }
+    .msg.u {
+      align-self: flex-end;
+      background: linear-gradient(135deg, rgba(14, 165, 164, 0.12), rgba(34, 197, 94, 0.10));
+    }
+    .msg.a {
+      align-self: flex-start;
+      background: rgba(255, 255, 255, 0.72);
+    }
+    .msg-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 6px;
+      font-size: 12px;
+      color: rgba(71, 85, 105, 0.92);
+    }
+    .msg-head span {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .think {
+      border: 1px solid rgba(15, 23, 42, 0.10);
+      background: rgba(15, 23, 42, 0.035);
+      border-radius: 12px;
+      padding: 8px 10px;
+      margin-bottom: 8px;
+    }
+    .think summary {
+      cursor: pointer;
+      font-size: 12px;
+      color: rgba(71, 85, 105, 0.92);
+      user-select: none;
+      list-style: none;
+    }
+    .think summary::-webkit-details-marker { display: none; }
+    .think summary::before {
+      content: "▸";
+      display: inline-block;
+      margin-right: 6px;
+      transform: translateY(-1px);
+    }
+    .think[open] summary::before { content: "▾"; }
+    .think pre {
+      margin: 8px 0 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      font-size: 12px;
+      line-height: 1.55;
+      color: rgba(71, 85, 105, 0.96);
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    }
+    .mini {
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      background: rgba(15, 23, 42, 0.06);
+      border-color: rgba(15, 23, 42, 0.10);
+    }
+    .mini:hover:not(:disabled) { background: rgba(15, 23, 42, 0.08); }
+
+    .composer {
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .video-panel { padding: 12px; }
+    .action-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .file {
+      flex: 1;
+      min-width: 220px;
+      padding: 8px;
+      background: rgba(255, 255, 255, 0.55);
+    }
+    .file::file-selector-button {
+      font: inherit;
+      padding: 8px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(15, 23, 42, 0.14);
+      background: rgba(15, 23, 42, 0.05);
+      margin-right: 10px;
+      cursor: pointer;
+    }
+    .file::file-selector-button:hover { background: rgba(15, 23, 42, 0.08); }
+
+    .status {
+      font-size: 12px;
+      min-height: 18px;
+      color: rgba(71, 85, 105, 0.95);
+    }
+    .status.err { color: #b91c1c; }
+    .status.ok { color: #047857; }
+
+    #atts { display: grid; gap: 8px; }
+    .fi {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 10px;
+      border: 1px solid rgba(15, 23, 42, 0.12);
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.62);
+    }
+    .fi button {
+      padding: 8px 10px;
+      border-radius: 999px;
+      background: rgba(239, 68, 68, 0.10);
+      color: #991b1b;
+      border-color: rgba(239, 68, 68, 0.28);
+    }
+
+    .log-panel { display: none; padding: 12px; }
+    .log-panel.visible {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .log-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+    }
+    .log-header span {
+      font-family: "Space Grotesk", "Noto Sans SC", sans-serif;
+      font-weight: 600;
+      letter-spacing: 0.2px;
+    }
+
+    .video-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .video-tag {
+      font-size: 12px;
+      color: rgba(71, 85, 105, 0.95);
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(15, 23, 42, 0.12);
+      background: rgba(255, 255, 255, 0.55);
+      white-space: nowrap;
+    }
+    .video-row input {
+      flex: 1;
+      min-width: 220px;
+      font-size: 12px;
+      padding: 10px 10px;
+    }
+    .video-clear {
+      padding: 10px 12px;
+      font-size: 12px;
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.06);
+      border-color: rgba(15, 23, 42, 0.12);
+    }
+
+    #logs {
+      flex: 1;
+      min-height: 46vh;
+      max-height: 56vh;
+      overflow: auto;
+      font-size: 12px;
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+      background:
+        radial-gradient(900px 450px at 20% 10%, rgba(14, 165, 164, 0.14), transparent 60%),
+        radial-gradient(800px 420px at 80% 30%, rgba(34, 197, 94, 0.10), transparent 60%),
+        #0b1220;
+      color: rgba(226, 232, 240, 0.92);
+      border-radius: var(--radius-sm);
+      border: 1px solid rgba(148, 163, 184, 0.20);
+      padding: 10px 10px;
+    }
+    .log-entry { padding: 3px 0; border-bottom: 1px solid rgba(148, 163, 184, 0.16); }
     .log-entry:last-child { border-bottom: none; }
-    .log-time { color: #6a9955; margin-right: 8px; }
-    .log-event { color: #569cd6; font-weight: bold; }
-    .log-detail { color: #ce9178; margin-left: 8px; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
-    .log-toggle { background: #6366f1; color: #fff; border-color: #6366f1; }
-    .log-toggle.active { background: #4f46e5; border-color: #4f46e5; }
-    .log-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-    .log-header span { font-weight: bold; font-size: 14px; }
-    @media (max-width: 900px) {
-      .content-row { flex-direction: column; }
-      .log-panel { width: 100%; }
+    .log-time { color: rgba(34, 197, 94, 0.85); margin-right: 8px; }
+    .log-event { color: rgba(56, 189, 248, 0.95); font-weight: 600; }
+    .log-detail { color: rgba(251, 191, 36, 0.88); margin-left: 8px; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
+
+    @keyframes popIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .msg { animation: none; }
+      button { transition: none; }
+    }
+
+    @media (max-width: 980px) {
+      .shell.has-logs { grid-template-columns: 1fr; }
+      #messages { max-height: 56vh; }
+      #logs { max-height: 44vh; }
+      .brand { display: none; }
     }
   </style>
 </head>
 <body>
   <main>
-    <section>
-      <div class="row">
-        <input id="apiKey" type="text" placeholder="API Key（可选）" />
-        <select id="model"><option value="qwen3.5-plus">qwen3.5-plus</option></select>
-        <button id="refreshModels" type="button">刷新模型</button>
+    <header class="panel topbar">
+      <div class="brand">
+        <b>Qwen2API Chat</b>
+        <span id="brandSub">轻量 · 流式 · 支持附件</span>
+      </div>
+      <div class="controls">
+        <button id="langToggle" class="btn" type="button" aria-label="Language">EN</button>
+        <input id="apiKey" class="grow" type="text" placeholder="API Key（可选）" autocomplete="off" spellcheck="false" />
+        <select id="model" class="grow"><option value="qwen3.5-plus">qwen3.5-plus</option></select>
+        <button id="refreshModels" class="btn" type="button">刷新模型</button>
         <button id="logToggle" class="log-toggle" type="button">显示日志</button>
-        <button id="clear" class="warn" type="button">清空会话</button>
+      </div>
+    </header>
+
+    <section class="panel video-panel" aria-label="视频分析">
+      <div class="video-row">
+        <span class="video-tag" id="videoTag">视频分析（可选）</span>
+        <input id="videoUrl" type="text" placeholder="粘贴视频链接；发送时自动进入视频分析；留空则普通对话" autocomplete="off" spellcheck="false" />
+        <button id="clearVideo" class="video-clear" type="button">清空</button>
       </div>
     </section>
-    <div class="content-row">
-      <section id="messages"></section>
-      <section class="log-panel" id="logPanel">
+
+    <section class="panel video-panel" aria-label="图片生成">
+      <div class="video-row">
+        <span class="video-tag" id="imageGenTag">图片生成</span>
+        <select id="imageGenMode" style="flex: 0 0 auto; min-width: 120px;">
+          <option value="chat">聊天模式</option>
+          <option value="image">图片生成</option>
+        </select>
+        <select id="imageSize" style="flex: 0 0 auto; min-width: 120px;">
+          <option value="1:1">1:1 (正方形)</option>
+          <option value="16:9">16:9 (宽屏)</option>
+          <option value="9:16">9:16 (竖屏)</option>
+          <option value="4:3">4:3 (传统)</option>
+          <option value="3:4">3:4 (传统竖)</option>
+        </select>
+        <select id="imageCount" style="flex: 0 0 auto; min-width: 80px;">
+          <option value="1">1张</option>
+          <option value="2">2张</option>
+          <option value="3">3张</option>
+          <option value="4">4张</option>
+          <option value="5">5张</option>
+        </select>
+      </div>
+    </section>
+
+    <div class="shell" id="shell">
+      <section id="messages" class="panel" aria-label="消息列表"></section>
+
+      <aside class="panel log-panel" id="logPanel" aria-label="运行日志">
         <div class="log-header">
-          <span>运行日志</span>
-          <button id="clearLogs" type="button" class="mini">清空日志</button>
-        </div>
-        <div class="video-input-row">
-          <input id="videoUrl" type="text" placeholder="输入视频链接（支持 YouTube/B站等）" />
-          <button id="downloadVideo" type="button">保存链接</button>
+          <span id="logsTitle">运行日志</span>
+          <button id="clearLogs" type="button" class="mini">清空</button>
         </div>
         <div id="logs"></div>
-      </section>
+      </aside>
     </div>
-    <section>
-      <textarea id="prompt" placeholder="输入消息；Enter发送，Shift+Enter换行"></textarea>
-      <div class="row">
-        <input id="files" type="file" multiple accept=".pdf,.doc,.docx,.dot,.csv,.xlsx,.xls,.txt,.text,.md,.js,.mjs,.ts,.jsx,.tsx,.vue,.html,.htm,.css,.svg,.svgz,.xml,.json,.jsonc,.wasm,.tex,.latex,.c,.h,.cc,.cxx,.cpp,.hpp,.hh,.hxx,.ino,.java,.kt,.kts,.scala,.groovy,.go,.rs,.swift,.php,.rb,.cs,.vb,.fs,.csproj,.sln,.sql,.lua,.r,.pl,.tcl,.awk,.fish,.yaml,.yml,.toml,.ini,.sh,.bat,.cmd,.dockerfile,.containerfile,.proto,.thrift,.graphql,.gql,.qmd,.smali,.gif,.webp,.jpg,.jpeg,.png,.bmp,.icns,.jp2,.sgi,.tif,.tiff,.mkv,.mov,.wav,.mp3,.m4a,.amr,.aac,image/*,audio/*,video/*" />
+
+    <section class="panel composer" aria-label="输入区">
+      <textarea id="prompt" placeholder="输入消息；Enter 发送，Shift+Enter 换行"></textarea>
+      <div class="action-row">
+        <input id="files" class="file" type="file" multiple accept=".pdf,.doc,.docx,.dot,.csv,.xlsx,.xls,.txt,.text,.md,.js,.mjs,.ts,.jsx,.tsx,.vue,.html,.htm,.css,.svg,.svgz,.xml,.json,.jsonc,.wasm,.tex,.latex,.c,.h,.cc,.cxx,.cpp,.hpp,.hh,.hxx,.ino,.java,.kt,.kts,.scala,.groovy,.go,.rs,.swift,.php,.rb,.cs,.vb,.fs,.csproj,.sln,.sql,.lua,.r,.pl,.tcl,.awk,.fish,.yaml,.yml,.toml,.ini,.sh,.bat,.cmd,.dockerfile,.containerfile,.proto,.thrift,.graphql,.gql,.qmd,.smali,.gif,.webp,.jpg,.jpeg,.png,.bmp,.icns,.jp2,.sgi,.tif,.tiff,.mkv,.mov,.wav,.mp3,.m4a,.amr,.aac,image/*,audio/*,video/*" />
         <button id="send" class="primary" type="button">发送</button>
-        <button id="stop" type="button" disabled>中断</button>
+        <button id="stop" class="btn" type="button" disabled>中断</button>
+        <button id="clear" class="warn" type="button">清空会话</button>
       </div>
       <div id="atts"></div>
       <div id="status" class="status"></div>
     </section>
+    
+    <footer style="text-align: center; padding: 16px; margin-top: 8px;">
+      <a href="https://github.com/smanx/qwen2api" target="_blank" rel="noopener noreferrer" style="display: inline-flex; align-items: center; gap: 8px; text-decoration: none; color: var(--muted); font-size: 14px; padding: 10px 16px; border-radius: 12px; border: 1px solid var(--border); background: var(--panel); transition: all 140ms ease;">
+        <svg viewBox="0 0 24 24" style="width: 20px; height: 20px; fill: currentColor;">
+          <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+        </svg>
+        <span>GitHub</span>
+      </a>
+    </footer>
   </main>
   <script>
     (function () {
@@ -277,12 +674,21 @@ function handleChatPage() {
       var VIDEO_URL_KEY = 'qwen2api.video.url.v1';
       var SHOW_LOGS_KEY = 'qwen2api.chat.showLogs.v1';
       var MODEL_KEY = 'qwen2api.chat.model.v1';
-      var state = { hist: [], files: [], ac: null, sending: false, showLogs: false, videoUrl: '', modelLoading: false, modelLoadId: 0, preferredModel: '', lastModelAuthKey: null };
-      var apiBase = (function () { var p = (location && location.pathname) ? location.pathname : ''; if (p === '/.netlify/functions/api' || p.indexOf('/.netlify/functions/api/') === 0) return '/.netlify/functions/api'; if (p === '/api' || p.indexOf('/api/') === 0) return '/api'; return ''; })();
+      var LANG_KEY = 'qwen2api.chat.lang.v1';
+      var state = { hist: [], files: [], ac: null, sending: false, showLogs: false, videoUrl: '', modelLoadId: 0, modelLoading: false, preferredModel: '', lastModelAuthKey: null, imageGenMode: 'chat' };
+      var API_BASE = (function () {
+        var p = (location && location.pathname) ? location.pathname : '';
+        if (p === '/.netlify/functions/api' || p.indexOf('/.netlify/functions/api/') === 0) return '/.netlify/functions/api';
+        if (p === '/api' || p.indexOf('/api/') === 0) return '/api';
+        return '';
+      })();
       function apiUrl(path) {
-        return apiBase ? (apiBase + path) : path;
+        return API_BASE ? (API_BASE + path) : path;
       }
+
       var e = {
+        shell: document.getElementById('shell'),
+        langToggle: document.getElementById('langToggle'),
         apiKey: document.getElementById('apiKey'),
         model: document.getElementById('model'),
         refreshModels: document.getElementById('refreshModels'),
@@ -292,33 +698,553 @@ function handleChatPage() {
         logs: document.getElementById('logs'),
         clearLogs: document.getElementById('clearLogs'),
         videoUrl: document.getElementById('videoUrl'),
-        downloadVideo: document.getElementById('downloadVideo'),
+        clearVideo: document.getElementById('clearVideo'),
         messages: document.getElementById('messages'),
         prompt: document.getElementById('prompt'),
         files: document.getElementById('files'),
         atts: document.getElementById('atts'),
         send: document.getElementById('send'),
         stop: document.getElementById('stop'),
-        status: document.getElementById('status')
+        status: document.getElementById('status'),
+        imageGenMode: document.getElementById('imageGenMode'),
+        imageSize: document.getElementById('imageSize'),
+        imageCount: document.getElementById('imageCount')
       };
+
+      function getPreferredLang() {
+        var v = '';
+        try { v = localStorage.getItem(LANG_KEY) || ''; } catch (_) {}
+        v = String(v || '').toLowerCase();
+        if (v === 'en' || v === 'zh') return v;
+        try {
+          var nav = (navigator && (navigator.language || (navigator.languages && navigator.languages[0]))) || '';
+          nav = String(nav || '').toLowerCase();
+          if (nav.indexOf('zh') === 0) return 'zh';
+        } catch (_) {}
+        return 'en';
+      }
+
+      function t(key) {
+        var L = state.lang || 'zh';
+        var dict = {
+          zh: {
+            brandSub: '轻量 · 流式 · 支持附件',
+            apiKeyPh: 'API Key（可选）',
+            refreshModels: '刷新模型',
+            refreshModelsLoading: '加载中...',
+            showLogs: '显示日志',
+            hideLogs: '隐藏日志',
+            clearChat: '清空会话',
+            logsTitle: '运行日志',
+            clear: '清空',
+            videoTag: '视频分析（可选）',
+            videoPh: '粘贴视频链接；发送时自动进入视频分析；留空则普通对话',
+            inputPh: '输入消息；Enter 发送，Shift+Enter 换行',
+            send: '发送',
+            sending: '发送中...',
+            stop: '中断',
+            stopping: '中断中...',
+            retry: '重发',
+            assistant: '助手',
+            user: '用户',
+            think: '思考过程',
+            emptyAssistant: '（空响应）',
+            attachMsg: '[附件消息]',
+            attachPrefix: '[附件] ',
+            emptyHint: '开始对话吧。支持粘贴文本、上传文件，Enter 发送。'
+            ,ready: '就绪。'
+            ,loadingModels: '正在加载模型列表...'
+            ,modelsUpdated: '模型列表已更新（{n}）'
+            ,modelsLoadingWait: '模型列表加载中，请稍候。'
+            ,modelsLoadingWaitSend: '模型列表加载中，请稍候发送。'
+            ,resendWait: '模型列表加载中，请稍候重发。'
+            ,onlyResendUser: '仅支持重发用户消息。'
+            ,historySimplified: '历史附件已简化，已回退为文本重发。'
+            ,inputOrFileRequired: '请输入内容或选择附件。'
+            ,processingAttachments: '正在处理附件...'
+            ,attachmentsFailed: '附件处理失败'
+            ,requestingChat: '请求中（流式）...'
+            ,requestingLogs: '请求中（日志）...'
+            ,requestingVideo: '请求中（视频分析）...'
+            ,requestingVideoLogs: '请求中（视频分析 + 日志）...'
+            ,done: '完成。'
+            ,aborted: '已中断请求。'
+            ,abortInProgress: '正在中断请求...'
+            ,noActiveRequest: '当前没有进行中的请求。'
+            ,busyNoDoubleSend: '请求进行中，请勿重复发送。'
+            ,maxAttachments: '最多允许 {n} 个附件。'
+            ,fileTooLarge: '文件过大：{name}（上限 {max}）'
+            ,addedAttachments: '已选择 {n} 个附件。'
+            ,addedAndSkipped: '已添加 {added} 个附件，跳过 {skipped} 个重复/无效附件。'
+            ,addedNoneSkipped: '未新增附件（均为重复或无效文件）。'
+            ,videoUrlInvalid: '视频链接需以 http:// 或 https:// 开头。'
+            ,videoSet: '已设置视频链接：发送时将自动进入视频分析。'
+            ,videoCleared: '已清空视频链接：将恢复普通对话。'
+            ,videoRestored: '已恢复上次视频链接。'
+            ,logsClearBusy: '请求进行中，暂不能清空日志。'
+            ,logsClearBusyModels: '模型列表加载中，请稍候清空日志。'
+            ,logsCleared: '日志已清空。'
+            ,logsAlreadyEmpty: '日志已为空。'
+            ,clearChatBusy: '请求进行中，暂不能清空会话。'
+            ,clearChatBusyModels: '模型列表加载中，请稍候清空会话。'
+            ,chatCleared: '会话已清空。'
+            ,chatAlreadyEmpty: '会话已为空。'
+            ,refreshModelsBusy: '请求进行中，暂不能刷新模型。'
+            ,loadingModelsStatus: '正在加载模型列表...'
+            ,requestFailed: '请求失败'
+            ,abortedTag: '[已中断]'
+            ,errorTag: '[错误]'
+            ,fileReadFailed: '读取文件失败: {name}'
+            ,attachmentRemoveBusy: '请求进行中，暂不能修改附件。'
+            ,attachmentRemoveBusyModels: '模型列表加载中，请稍候再修改附件。'
+            ,remove: '移除'
+            ,modelsLoadFailedFallback: '加载模型失败，已回退默认模型。'
+            ,authFailed: '鉴权失败：Incorrect API key provided.'
+            ,payloadTooLarge: '请求体过大，请减小附件。'
+            ,serverError: '服务端异常，请稍后重试。'
+          },
+          en: {
+            brandSub: 'Light · Streaming · Attachments',
+            apiKeyPh: 'API key (optional)',
+            refreshModels: 'Refresh models',
+            refreshModelsLoading: 'Loading...',
+            showLogs: 'Show logs',
+            hideLogs: 'Hide logs',
+            clearChat: 'Clear chat',
+            logsTitle: 'Runtime logs',
+            clear: 'Clear',
+            videoTag: 'Video analysis (optional)',
+            videoPh: 'Paste a video URL; sending will trigger video analysis; empty = normal chat',
+            inputPh: 'Type a message; Enter to send, Shift+Enter for newline',
+            send: 'Send',
+            sending: 'Sending...',
+            stop: 'Stop',
+            stopping: 'Stopping...',
+            retry: 'Resend',
+            assistant: 'Assistant',
+            user: 'User',
+            think: 'Thinking',
+            emptyAssistant: '(empty response)',
+            attachMsg: '[Attachment message]',
+            attachPrefix: '[Attachments] ',
+            emptyHint: 'Start chatting. Paste text, upload files, press Enter to send.'
+            ,ready: 'Ready.'
+            ,loadingModels: 'Loading model list...'
+            ,modelsUpdated: 'Model list updated ({n})'
+            ,modelsLoadingWait: 'Model list is loading, please wait.'
+            ,modelsLoadingWaitSend: 'Model list is loading, please wait before sending.'
+            ,resendWait: 'Model list is loading, please wait before resending.'
+            ,onlyResendUser: 'Only user messages can be resent.'
+            ,historySimplified: 'Attachments in history were simplified; falling back to text resend.'
+            ,inputOrFileRequired: 'Type a message or choose attachments.'
+            ,processingAttachments: 'Processing attachments...'
+            ,attachmentsFailed: 'Failed to process attachments'
+            ,requestingChat: 'Requesting (streaming)...'
+            ,requestingLogs: 'Requesting (logs)...'
+            ,requestingVideo: 'Requesting (video analysis)...'
+            ,requestingVideoLogs: 'Requesting (video + logs)...'
+            ,done: 'Done.'
+            ,aborted: 'Request aborted.'
+            ,abortInProgress: 'Aborting request...'
+            ,noActiveRequest: 'No active request.'
+            ,busyNoDoubleSend: 'Request in progress. Please do not send again.'
+            ,maxAttachments: 'Up to {n} attachments.'
+            ,fileTooLarge: 'File too large: {name} (limit {max})'
+            ,addedAttachments: '{n} attachments selected.'
+            ,addedAndSkipped: 'Added {added} attachments, skipped {skipped} duplicates/invalid.'
+            ,addedNoneSkipped: 'No new attachments (all duplicates/invalid).'
+            ,videoUrlInvalid: 'Video URL must start with http:// or https://'
+            ,videoSet: 'Video URL set: sending will trigger video analysis.'
+            ,videoCleared: 'Video URL cleared: normal chat mode.'
+            ,videoRestored: 'Restored previous video URL.'
+            ,logsClearBusy: 'Request in progress; cannot clear logs.'
+            ,logsClearBusyModels: 'Model list is loading; cannot clear logs yet.'
+            ,logsCleared: 'Logs cleared.'
+            ,logsAlreadyEmpty: 'Logs are already empty.'
+            ,clearChatBusy: 'Request in progress; cannot clear chat.'
+            ,clearChatBusyModels: 'Model list is loading; cannot clear chat yet.'
+            ,chatCleared: 'Chat cleared.'
+            ,chatAlreadyEmpty: 'Chat is already empty.'
+            ,refreshModelsBusy: 'Request in progress; cannot refresh models.'
+            ,loadingModelsStatus: 'Loading model list...'
+            ,requestFailed: 'Request failed'
+            ,abortedTag: '[ABORTED]'
+            ,errorTag: '[ERROR]'
+            ,fileReadFailed: 'Failed to read file: {name}'
+            ,attachmentRemoveBusy: 'Request in progress; attachments cannot be modified.'
+            ,attachmentRemoveBusyModels: 'Model list is loading; attachments cannot be modified yet.'
+            ,remove: 'Remove'
+            ,modelsLoadFailedFallback: 'Failed to load models; fell back to default model.'
+            ,authFailed: 'Auth failed: Incorrect API key provided.'
+            ,payloadTooLarge: 'Request body too large; please reduce attachments.'
+            ,serverError: 'Server error; please try again later.'
+          }
+        };
+        return (dict[L] && dict[L][key]) || (dict.zh && dict.zh[key]) || key;
+      }
+
+      function tf(key, params) {
+        var s = String(t(key) || '');
+        var p = params && typeof params === 'object' ? params : {};
+        return s.replace(/\{(\w+)\}/g, function (_, k) { return (p[k] !== undefined && p[k] !== null) ? String(p[k]) : ''; });
+      }
+
+      function applyLangToUI() {
+        document.documentElement.setAttribute('lang', state.lang === 'en' ? 'en' : 'zh-CN');
+        try { document.documentElement.style.setProperty('--empty-hint', '"' + String(t('emptyHint')).replace(/"/g, '\\"') + '"'); } catch (_) {}
+        if (e.langToggle) e.langToggle.textContent = state.lang === 'en' ? '中文' : 'EN';
+
+        var brandSub = document.getElementById('brandSub');
+        if (brandSub) brandSub.textContent = t('brandSub');
+
+        if (e.apiKey) e.apiKey.placeholder = t('apiKeyPh');
+        if (e.refreshModels) e.refreshModels.textContent = state.modelLoading ? t('refreshModelsLoading') : t('refreshModels');
+        if (e.clear) e.clear.textContent = t('clearChat');
+        if (e.clearLogs) e.clearLogs.textContent = t('clear');
+        if (e.videoUrl) e.videoUrl.placeholder = t('videoPh');
+        var videoTagEl = document.getElementById('videoTag');
+        if (videoTagEl) videoTagEl.textContent = t('videoTag');
+        if (e.clearVideo) e.clearVideo.textContent = t('clear');
+        var logsTitle = document.getElementById('logsTitle');
+        if (logsTitle) logsTitle.textContent = t('logsTitle');
+        if (e.prompt) e.prompt.placeholder = t('inputPh');
+        if (e.send) e.send.textContent = state.sending ? t('sending') : t('send');
+        if (e.stop) e.stop.textContent = (state.ac && state.stop.disabled) ? t('stopping') : t('stop');
+
+        if (e.logToggle) {
+          e.logToggle.textContent = state.showLogs ? t('hideLogs') : t('showLogs');
+        }
+
+        rHist();
+      }
+
+      function setLang(next) {
+        var v = String(next || '').toLowerCase();
+        if (v !== 'en' && v !== 'zh') v = 'zh';
+        state.lang = v;
+        try { localStorage.setItem(LANG_KEY, v); } catch (_) {}
+        applyLangToUI();
+      }
+
+      // state/history
       function st(t, k) { e.status.textContent = t || ''; e.status.className = 'status ' + (k || ''); }
-      function msg(role, text, idx) { var d = document.createElement('div'); d.className = 'msg ' + (role === 'assistant' ? 'a' : 'u'); var head = document.createElement('div'); head.className = 'msg-head'; var roleLabel = document.createElement('span'); roleLabel.textContent = role === 'assistant' ? '助手' : '用户'; head.appendChild(roleLabel); if (role === 'user' && typeof idx === 'number') { var retry = document.createElement('button'); retry.type = 'button'; retry.className = 'mini'; retry.textContent = '重发'; retry.disabled = state.sending || state.modelLoading; retry.onclick = function () { resendFromIndex(idx); }; head.appendChild(retry); } var body = document.createElement('div'); body.textContent = text || ''; d.appendChild(head); d.appendChild(body); e.messages.appendChild(d); e.messages.scrollTop = e.messages.scrollHeight; return body; }
-      function summarizeMessageContent(content) { if (typeof content === 'string') { if (content.length > MAX_HISTORY_TEXT_CHARS) return content.slice(0, MAX_HISTORY_TEXT_CHARS) + '\n\n[已截断，原文过长]'; return content; } if (!Array.isArray(content)) return ''; var texts = []; var names = []; for (var i = 0; i < content.length; i++) { var part = content[i] || {}; var type = part.type || ''; if (type === 'input_text' && typeof part.input_text === 'string' && part.input_text.trim()) texts.push(part.input_text.trim()); if ((type === 'input_file' || type === 'input_image' || type === 'input_video' || type === 'input_audio') && typeof part.filename === 'string' && part.filename.trim()) names.push(part.filename.trim()); } var base = texts.join('\n'); if (base.length > MAX_HISTORY_TEXT_CHARS) base = base.slice(0, MAX_HISTORY_TEXT_CHARS) + '\n\n[已截断，原文过长]'; if (names.length > 0) return (base ? base + '\n' : '') + '[附件] ' + names.join(', '); return base; }
-      function rHist() { e.messages.innerHTML = ''; for (var i = 0; i < state.hist.length; i++) { var x = state.hist[i]; if (!x) continue; var content = x.content; if (typeof content !== 'string' && !Array.isArray(content)) continue; var preview = summarizeMessageContent(content); if (!preview || !String(preview).trim()) preview = x.role === 'assistant' ? '（空响应）' : '[附件消息]'; msg(x.role, preview, i); } syncRetryEnabled(); }
-      function canSendNow() { return !!(e.prompt.value || '').trim() || state.files.length > 0; }
-      function syncSendEnabled() { e.send.disabled = !!state.sending || !!state.modelLoading || !canSendNow(); }
-      function syncRetryEnabled() { var retryButtons = e.messages.querySelectorAll('.msg-head .mini'); for (var i = 0; i < retryButtons.length; i++) retryButtons[i].disabled = !!state.sending || !!state.modelLoading; }
-      function compactMessageContentForStorage(content) { if (typeof content === 'string') { if (content.length > MAX_HISTORY_TEXT_CHARS) return content.slice(0, MAX_HISTORY_TEXT_CHARS) + '\n\n[已截断，原文过长]'; return content; } return summarizeMessageContent(content); }
-      function compactHistoryForStorage(list) { var source = Array.isArray(list) ? list : []; var out = []; for (var i = 0; i < source.length; i++) { var item = source[i] || {}; out.push({ role: item.role === 'assistant' ? 'assistant' : 'user', content: compactMessageContentForStorage(item.content) }); } return out; }
-      function persistHistoryWithFallback(kept) { var list = compactHistoryForStorage(kept); for (var start = 0; start <= list.length; start++) { try { localStorage.setItem(KEY, JSON.stringify(list.slice(start))); return; } catch (_) {} } }
-      function save() { var kept = []; try { kept = state.hist.filter(function (x) { if (!x) return false; if (typeof x.content === 'string') return !!x.content.trim(); return Array.isArray(x.content) && x.content.length > 0; }).slice(-MAX_HISTORY); } catch (_) {} try { persistHistoryWithFallback(kept); } catch (_) {} try { if (state.videoUrl) localStorage.setItem(VIDEO_URL_KEY, state.videoUrl); else localStorage.removeItem(VIDEO_URL_KEY); localStorage.setItem(SHOW_LOGS_KEY, state.showLogs ? '1' : '0'); if (state.preferredModel) localStorage.setItem(MODEL_KEY, state.preferredModel); else localStorage.removeItem(MODEL_KEY); } catch (_) {} }
-      function load() { try { var v = localStorage.getItem(KEY); if (v) { var a = JSON.parse(v); if (Array.isArray(a)) { var normalized = []; for (var i = 0; i < a.length; i++) { var item = a[i] || {}; var content = item.content; if (typeof content !== 'string' && !Array.isArray(content)) continue; normalized.push({ role: item.role === 'assistant' ? 'assistant' : 'user', content: content }); } state.hist = normalized.slice(-MAX_HISTORY); } } } catch (_) {} try { var savedVideoUrl = localStorage.getItem(VIDEO_URL_KEY); if (savedVideoUrl) { state.videoUrl = savedVideoUrl; e.videoUrl.value = savedVideoUrl; } } catch (_) {} try { state.showLogs = localStorage.getItem(SHOW_LOGS_KEY) === '1'; } catch (_) {} try { var savedModel = localStorage.getItem(MODEL_KEY); if (savedModel) state.preferredModel = savedModel; } catch (_) {} }
-      function busy(b) { e.stop.disabled = !b; if (!b) e.stop.textContent = '中断'; e.prompt.disabled = b; e.files.disabled = b; e.clear.disabled = b; e.refreshModels.disabled = b || state.modelLoading; e.logToggle.disabled = b; e.clearLogs.disabled = b; e.videoUrl.disabled = b; e.downloadVideo.disabled = b; e.apiKey.disabled = b; e.model.disabled = b; e.send.textContent = b ? '发送中...' : '发送'; attRow(); }
+      function compactMessageContentForStorage(content) {
+        if (typeof content === 'string') {
+          if (content.length > MAX_HISTORY_TEXT_CHARS) return content.slice(0, MAX_HISTORY_TEXT_CHARS) + '\n\n[TRUNCATED]';
+          return content;
+        }
+        return summarizeMessageContent(content);
+      }
+      function compactHistoryForStorage(list) {
+        var source = Array.isArray(list) ? list : [];
+        var out = [];
+        for (var i = 0; i < source.length; i++) {
+          var item = source[i] || {};
+          out.push({
+            role: item.role === 'assistant' ? 'assistant' : 'user',
+            content: compactMessageContentForStorage(item.content)
+          });
+        }
+        return out;
+      }
+      function persistHistoryWithFallback(kept) {
+        var list = compactHistoryForStorage(kept);
+        for (var start = 0; start <= list.length; start++) {
+          try {
+            localStorage.setItem(KEY, JSON.stringify(list.slice(start)));
+            return;
+          } catch (_) {}
+        }
+      }
+      function save() {
+        var kept = [];
+        try {
+          kept = state.hist.filter(function (x) {
+            if (!x) return false;
+            if (typeof x.content === 'string') return !!x.content.trim();
+            return Array.isArray(x.content) && x.content.length > 0;
+          }).slice(-MAX_HISTORY);
+        } catch (_) {}
+        try { persistHistoryWithFallback(kept); } catch (_) {}
+        try {
+          if (state.videoUrl) localStorage.setItem(VIDEO_URL_KEY, state.videoUrl);
+          else localStorage.removeItem(VIDEO_URL_KEY);
+          localStorage.setItem(SHOW_LOGS_KEY, state.showLogs ? '1' : '0');
+          if (state.preferredModel) localStorage.setItem(MODEL_KEY, state.preferredModel);
+          else localStorage.removeItem(MODEL_KEY);
+        } catch (_) {}
+      }
+      function load() {
+        try {
+          var v = localStorage.getItem(KEY);
+          if (v) {
+            var a = JSON.parse(v);
+            if (Array.isArray(a)) {
+              var normalized = [];
+              for (var i = 0; i < a.length; i++) {
+                var item = a[i] || {};
+                var content = item.content;
+                if (typeof content !== 'string' && !Array.isArray(content)) continue;
+                normalized.push({
+                  role: item.role === 'assistant' ? 'assistant' : 'user',
+                  content: content
+                });
+              }
+              state.hist = normalized.slice(-MAX_HISTORY);
+            }
+          }
+        } catch (_) {}
+        try {
+          var savedVideoUrl = localStorage.getItem(VIDEO_URL_KEY);
+          if (savedVideoUrl) {
+            state.videoUrl = savedVideoUrl;
+            e.videoUrl.value = savedVideoUrl;
+          }
+        } catch (_) {}
+        try {
+          state.showLogs = localStorage.getItem(SHOW_LOGS_KEY) === '1';
+        } catch (_) {}
+        try {
+          var savedModel = localStorage.getItem(MODEL_KEY);
+          if (savedModel) state.preferredModel = savedModel;
+        } catch (_) {}
+        try {
+          var savedLang = localStorage.getItem(LANG_KEY);
+          if (savedLang) state.lang = String(savedLang || '').toLowerCase();
+        } catch (_) {}
+      }
+      function summarizeMessageContent(content) {
+        if (typeof content === 'string') {
+          if (content.length > MAX_HISTORY_TEXT_CHARS) return content.slice(0, MAX_HISTORY_TEXT_CHARS) + '\n\n[TRUNCATED]';
+          return content;
+        }
+        if (!Array.isArray(content)) return '';
+        var texts = [];
+        var names = [];
+        for (var i = 0; i < content.length; i++) {
+          var part = content[i] || {};
+          var type = part.type || '';
+          if (type === 'input_text' && typeof part.input_text === 'string' && part.input_text.trim()) texts.push(part.input_text.trim());
+          if ((type === 'input_file' || type === 'input_image' || type === 'input_video' || type === 'input_audio') && typeof part.filename === 'string' && part.filename.trim()) names.push(part.filename.trim());
+        }
+        var base = texts.join('\n');
+        if (base.length > MAX_HISTORY_TEXT_CHARS) base = base.slice(0, MAX_HISTORY_TEXT_CHARS) + '\n\n[TRUNCATED]';
+        if (names.length > 0) return (base ? base + '\n' : '') + t('attachPrefix') + names.join(', ');
+        return base;
+      }
+
+      function splitThinking(rawText) {
+        var raw = String(rawText || '');
+        if (!raw) return { think: '', final: '' };
+        var thinkParts = [];
+        var final = raw.replace(/<think>([\s\S]*?)<\/think>/gi, function (_, inner) {
+          if (inner && String(inner).trim()) thinkParts.push(String(inner).trim());
+          return '';
+        });
+        final = final.replace(/\n{3,}/g, '\n\n').trim();
+        return { think: thinkParts.join('\n\n').trim(), final: final };
+      }
+      function msg(role, text, idx) {
+        var d = document.createElement('div');
+        d.className = 'msg ' + (role === 'assistant' ? 'a' : 'u');
+        var head = document.createElement('div');
+        head.className = 'msg-head';
+        var roleLabel = document.createElement('span');
+         roleLabel.textContent = role === 'assistant' ? t('assistant') : t('user');
+        head.appendChild(roleLabel);
+        if (role === 'user' && typeof idx === 'number') {
+          var retry = document.createElement('button');
+          retry.type = 'button';
+          retry.className = 'mini';
+           retry.textContent = t('retry');
+          retry.disabled = state.sending || state.modelLoading;
+          retry.onclick = function () { resendFromIndex(idx); };
+          head.appendChild(retry);
+        }
+        var body = document.createElement('div');
+        d.appendChild(head);
+        d.appendChild(body);
+
+        if (role === 'assistant') {
+          var thinkWrap = document.createElement('details');
+          thinkWrap.className = 'think';
+          thinkWrap.open = false;
+          var thinkSummary = document.createElement('summary');
+          thinkSummary.textContent = t('think');
+          var thinkPre = document.createElement('pre');
+          thinkWrap.appendChild(thinkSummary);
+          thinkWrap.appendChild(thinkPre);
+
+          var finalDiv = document.createElement('div');
+          var imageContainer = document.createElement('div');
+          imageContainer.style.display = 'flex';
+          imageContainer.style.flexWrap = 'wrap';
+          imageContainer.style.gap = '10px';
+          imageContainer.style.marginTop = '10px';
+          
+          body.appendChild(thinkWrap);
+          body.appendChild(finalDiv);
+          body.appendChild(imageContainer);
+
+          function setAssistantRaw(rawText, imageUrls) {
+            var sp = splitThinking(rawText);
+            if (sp.think) {
+              thinkWrap.style.display = '';
+              thinkPre.textContent = sp.think;
+            } else {
+              thinkWrap.style.display = 'none';
+              thinkPre.textContent = '';
+            }
+            finalDiv.textContent = sp.final || '';
+            
+            if (imageUrls && imageUrls.length > 0) {
+              imageContainer.innerHTML = '';
+              for (var i = 0; i < imageUrls.length; i++) {
+                var img = document.createElement('img');
+                img.src = imageUrls[i];
+                img.style.maxWidth = '100%';
+                img.style.maxHeight = '400px';
+                img.style.borderRadius = '8px';
+                img.style.cursor = 'pointer';
+                img.onclick = function() {
+                  window.open(this.src, '_blank');
+                };
+                imageContainer.appendChild(img);
+              }
+            }
+          }
+
+          setAssistantRaw(text || '');
+          e.messages.appendChild(d);
+          e.messages.scrollTop = e.messages.scrollHeight;
+          return { setRaw: setAssistantRaw };
+        }
+
+        body.textContent = text || '';
+        e.messages.appendChild(d);
+        e.messages.scrollTop = e.messages.scrollHeight;
+        return body;
+      }
+      function rHist() {
+        e.messages.innerHTML = '';
+        for (var i = 0; i < state.hist.length; i++) {
+          var x = state.hist[i];
+          if (!x) continue;
+          var content = x.content;
+          if (typeof content !== 'string' && !Array.isArray(content)) continue;
+          var preview = summarizeMessageContent(content);
+          if (!preview || !String(preview).trim()) preview = x.role === 'assistant' ? t('emptyAssistant') : t('attachMsg');
+          var msgObj = msg(x.role, preview, i);
+          if (x.role === 'assistant' && x.imageUrls && x.imageUrls.length > 0 && msgObj && msgObj.setRaw) {
+            msgObj.setRaw(preview, x.imageUrls);
+          }
+        }
+        syncRetryEnabled();
+      }
+      function canSendNow() {
+        return !!(e.prompt.value || '').trim() || state.files.length > 0;
+      }
+      function syncSendEnabled() {
+        e.send.disabled = !!state.sending || !!state.modelLoading || !canSendNow();
+      }
+      function syncRetryEnabled() {
+        var retryButtons = e.messages.querySelectorAll('.msg-head .mini');
+        for (var i = 0; i < retryButtons.length; i++) {
+          retryButtons[i].disabled = !!state.sending || !!state.modelLoading;
+        }
+      }
+      function busy(b) {
+        e.stop.disabled = !b;
+        if (!b) e.stop.textContent = t('stop');
+        e.prompt.disabled = b;
+        e.files.disabled = b;
+        e.clear.disabled = b;
+        e.refreshModels.disabled = b || state.modelLoading;
+        e.logToggle.disabled = b;
+        e.clearLogs.disabled = b;
+        e.videoUrl.disabled = b;
+        e.clearVideo.disabled = b;
+        e.apiKey.disabled = b;
+        e.model.disabled = b;
+        e.imageGenMode.disabled = b;
+        e.imageSize.disabled = b;
+        e.imageCount.disabled = b;
+        e.send.textContent = b ? t('sending') : t('send');
+        attRow();
+      }
+
+      // attachment
       function bfmt(n) { if (n < 1024) return n + ' B'; if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB'; return (n / 1024 / 1024).toFixed(1) + ' MB'; }
-      function attRow() { e.atts.innerHTML = ''; for (var i = 0; i < state.files.length; i++) { (function (idx) { var w = document.createElement('div'); w.className = 'fi'; var t = document.createElement('div'); var f = state.files[idx]; t.textContent = f.name + ' (' + bfmt(f.size) + ')'; var rm = document.createElement('button'); rm.type = 'button'; rm.textContent = '移除'; rm.disabled = state.sending || state.modelLoading; rm.onclick = function () { if (state.sending || state.modelLoading) { st(state.sending ? '请求进行中，暂不能修改附件。' : '模型列表加载中，请稍候再修改附件。', 'err'); return; } state.files.splice(idx, 1); attRow(); }; w.appendChild(t); w.appendChild(rm); e.atts.appendChild(w); })(i); } syncSendEnabled(); syncRetryEnabled(); }
-      function toDataUrl(file) { return new Promise(function (ok, bad) { var r = new FileReader(); r.onload = function () { ok(String(r.result || '')); }; r.onerror = function () { bad(new Error('读取文件失败: ' + file.name)); }; r.readAsDataURL(file); }); }
-      function formatTime(ts) { var d = new Date(ts); var h = String(d.getHours()).padStart(2, '0'); var m = String(d.getMinutes()).padStart(2, '0'); var s = String(d.getSeconds()).padStart(2, '0'); var ms = String(d.getMilliseconds()).padStart(3, '0'); return h + ':' + m + ':' + s + '.' + ms; }
-      function formatLogValue(v) { var out = ''; if (v === null || v === undefined) out = ''; else if (typeof v === 'string') out = v; else if (typeof v === 'number' || typeof v === 'boolean') out = String(v); else { try { out = JSON.stringify(v); } catch (_) { out = String(v); } } if (out.length > 1000) out = out.slice(0, 1000) + '...'; return out; }
+      function attRow() {
+        e.atts.innerHTML = '';
+        for (var i = 0; i < state.files.length; i++) {
+          (function (idx) {
+            var w = document.createElement('div');
+            w.className = 'fi';
+            var textDiv = document.createElement('div');
+            var f = state.files[idx];
+            textDiv.textContent = f.name + ' (' + bfmt(f.size) + ')';
+            var rm = document.createElement('button');
+            rm.type = 'button';
+            rm.textContent = t('remove');
+            rm.disabled = state.sending || state.modelLoading;
+            rm.onclick = function () {
+              if (state.sending || state.modelLoading) {
+                st(state.sending ? t('attachmentRemoveBusy') : t('attachmentRemoveBusyModels'), 'err');
+                return;
+              }
+              state.files.splice(idx, 1);
+              attRow();
+            };
+            w.appendChild(textDiv);
+            w.appendChild(rm);
+            e.atts.appendChild(w);
+          })(i);
+        }
+        syncSendEnabled();
+        syncRetryEnabled();
+      }
+      function toDataUrl(file) {
+        return new Promise(function (ok, bad) {
+          var r = new FileReader();
+          r.onload = function () { ok(String(r.result || '')); };
+          r.onerror = function () { bad(new Error(tf('fileReadFailed', { name: file.name }))); };
+          r.readAsDataURL(file);
+        });
+      }
+      async function buildContent(text, files) {
+        var c = [];
+        if (text) c.push({ type: 'input_text', input_text: text });
+        for (var i = 0; i < files.length; i++) {
+          var f = files[i];
+          var d = await toDataUrl(f);
+          var m = (f.type || 'application/octet-stream').toLowerCase();
+          if (m.startsWith('image/')) c.push({ type: 'input_image', image_url: d, filename: f.name, mime_type: m });
+          else c.push({ type: 'input_file', file_data: d, filename: f.name, mime_type: m });
+        }
+        return c;
+      }
+
+      // logs
+      function formatTime(ts) {
+        var d = new Date(ts);
+        var h = String(d.getHours()).padStart(2, '0');
+        var m = String(d.getMinutes()).padStart(2, '0');
+        var s = String(d.getSeconds()).padStart(2, '0');
+        var ms = String(d.getMilliseconds()).padStart(3, '0');
+        return h + ':' + m + ':' + s + '.' + ms;
+      }
+      function formatLogValue(v) {
+        var out = '';
+        if (v === null || v === undefined) out = '';
+        else if (typeof v === 'string') out = v;
+        else if (typeof v === 'number' || typeof v === 'boolean') out = String(v);
+        else {
+          try { out = JSON.stringify(v); } catch (_) { out = String(v); }
+        }
+        if (out.length > 1000) out = out.slice(0, 1000) + '...';
+        return out;
+      }
       function addLog(logData) {
         if (!e.logs) return;
         var payload = logData && typeof logData === 'object' ? logData : { raw: String(logData || '') };
@@ -359,10 +1285,48 @@ function handleChatPage() {
         while (e.logs.childNodes.length > MAX_LOG_ENTRIES) e.logs.removeChild(e.logs.firstChild);
         if (atBottom) e.logs.scrollTop = e.logs.scrollHeight;
       }
+
+      // API + SSE
+      function emsg(code, payloadText, payloadJson) {
+        if (payloadJson && payloadJson.error && (payloadJson.error.message || payloadJson.error.details)) return String(payloadJson.error.message || payloadJson.error.details);
+        if (code === 401) return t('authFailed');
+        if (code === 413) return t('payloadTooLarge');
+        if (code >= 500) return t('serverError');
+        return payloadText ? (t('requestFailed') + '：' + payloadText) : (t('requestFailed') + '（HTTP ' + code + '）');
+      }
+      async function readErrorPayload(resp) {
+        var txt = await resp.text().catch(function () { return ''; });
+        var json = null;
+        try { json = txt ? JSON.parse(txt) : null; } catch (_) {}
+        return { txt: txt, json: json };
+      }
+      function extractAssistantText(payloadJson, payloadText) {
+        if (payloadJson) {
+          var c0 = payloadJson.choices && payloadJson.choices[0];
+          var msgContent = c0 && c0.message && c0.message.content;
+          var reasoning = c0 && c0.message && (c0.message.reasoning_content || c0.message.thinking || c0.message.reasoning);
+          if (typeof msgContent === 'string' && msgContent.trim()) return msgContent;
+          if (Array.isArray(msgContent)) {
+            var parts = [];
+            for (var i = 0; i < msgContent.length; i++) {
+              var p = msgContent[i] || {};
+              if (typeof p === 'string' && p.trim()) parts.push(p.trim());
+              else if (typeof p.text === 'string' && p.text.trim()) parts.push(p.text.trim());
+              else if (typeof p.output_text === 'string' && p.output_text.trim()) parts.push(p.output_text.trim());
+            }
+            if (parts.length > 0) return parts.join('\n');
+          }
+          var c0text = c0 && c0.text;
+          if (typeof c0text === 'string' && c0text.trim()) return c0text;
+          if (typeof payloadJson.output_text === 'string' && payloadJson.output_text.trim()) return payloadJson.output_text;
+          if (typeof reasoning === 'string' && reasoning.trim()) return '<think>' + reasoning.trim() + '</think>';
+        }
+        return payloadText || '';
+      }
       function createSSEState() {
         return { buffer: '', eventType: '', dataLines: [] };
       }
-      function parseSSELines(state, chunkText, isDone, useLogApi, outRef, aEl) {
+      function parseSSELines(state, chunkText, isDone, consumeLogs, outRef, aMsg) {
         state.buffer += chunkText;
         var lines = state.buffer.split('\n');
         state.buffer = lines.pop() || '';
@@ -370,36 +1334,49 @@ function handleChatPage() {
           lines.push(state.buffer);
           state.buffer = '';
         }
+
         var reachedDone = false;
         var apiError = '';
 
         function handlePayload(payload) {
           if (!payload) return;
-          if (useLogApi && state.eventType === 'log') {
-            try { addLog(JSON.parse(payload)); }
-            catch (_) {
-              var clippedRaw = payload.length > MAX_LOG_RAW_PREVIEW ? (payload.slice(0, MAX_LOG_RAW_PREVIEW) + '...') : payload;
+
+          if (state.eventType === 'log') {
+            if (!consumeLogs) return;
+            try {
+              addLog(JSON.parse(payload));
+            } catch (_) {
+              var clippedRaw = payload.length > MAX_LOG_RAW_PREVIEW
+                ? (payload.slice(0, MAX_LOG_RAW_PREVIEW) + '...')
+                : payload;
               addLog({ event: 'log.parse.failed', timestamp: Date.now(), raw: clippedRaw, size: payload.length });
             }
             return;
           }
+
           if (payload === '[DONE]') {
             reachedDone = true;
             return;
           }
+
           try {
             var parsed = JSON.parse(payload);
             if (parsed && parsed.error) {
-              apiError = String((parsed.error && (parsed.error.message || parsed.error.details)) || '请求失败');
+              apiError = String((parsed.error && (parsed.error.message || parsed.error.details)) || t('requestFailed'));
               return;
             }
-            var delta = parsed && parsed.choices && parsed.choices[0] && parsed.choices[0].delta && parsed.choices[0].delta.content;
-            if (typeof delta === 'string' && delta) {
-              outRef.value += delta;
-              aEl.textContent = outRef.value;
+            var d0 = parsed && parsed.choices && parsed.choices[0] && parsed.choices[0].delta;
+            var delta = d0 && d0.content;
+            var reasoning = d0 && (d0.reasoning_content || d0.thinking || d0.reasoning);
+            if (typeof reasoning === 'string' && reasoning) outRef.value += '<think>' + reasoning + '</think>';
+            if (typeof delta === 'string' && delta) outRef.value += delta;
+            if (aMsg && aMsg.setRaw) {
+              aMsg.setRaw(outRef.value);
               e.messages.scrollTop = e.messages.scrollHeight;
             }
-          } catch (_) {}
+          } catch (_) {
+            // 忽略损坏行，继续消费后续流
+          }
         }
 
         for (var i = 0; i < lines.length; i++) {
@@ -439,10 +1416,6 @@ function handleChatPage() {
         if (reachedDone || apiError) state.eventType = '';
         return { reachedDone: reachedDone, apiError: apiError };
       }
-      function emsg(code, txt, payloadJson) { if (payloadJson && payloadJson.error && payloadJson.error.message) return String(payloadJson.error.message); if (code === 401) return '鉴权失败：Incorrect API key provided.'; if (code === 413) return '请求体过大，请减小附件。'; if (code >= 500) return '服务端异常，请稍后重试。'; return txt ? ('请求失败：' + txt) : ('请求失败（HTTP ' + code + '）'); }
-      async function readErrorPayload(resp) { var txt = await resp.text().catch(function () { return ''; }); var json = null; try { json = txt ? JSON.parse(txt) : null; } catch (_) {} return { txt: txt, json: json }; }
-      function extractAssistantText(payloadJson, payloadText) { if (payloadJson) { var c0 = payloadJson.choices && payloadJson.choices[0]; var msgContent = c0 && c0.message && c0.message.content; if (typeof msgContent === 'string' && msgContent.trim()) return msgContent; if (Array.isArray(msgContent)) { var parts = []; for (var i = 0; i < msgContent.length; i++) { var p = msgContent[i] || {}; if (typeof p === 'string' && p.trim()) parts.push(p.trim()); else if (typeof p.text === 'string' && p.text.trim()) parts.push(p.text.trim()); else if (typeof p.output_text === 'string' && p.output_text.trim()) parts.push(p.output_text.trim()); } if (parts.length > 0) return parts.join('\n'); } var c0text = c0 && c0.text; if (typeof c0text === 'string' && c0text.trim()) return c0text; if (typeof payloadJson.output_text === 'string' && payloadJson.output_text.trim()) return payloadJson.output_text; } return payloadText || ''; }
-      async function buildContent(text, files) { var c = []; if (text) c.push({ type: 'input_text', input_text: text }); for (var i = 0; i < files.length; i++) { var f = files[i], d = await toDataUrl(f), m = (f.type || 'application/octet-stream').toLowerCase(); if (m.startsWith('image/')) c.push({ type: 'input_image', image_url: d, filename: f.name, mime_type: m }); else c.push({ type: 'input_file', file_data: d, filename: f.name, mime_type: m }); } return c; }
       async function loadModels() {
         var reqId = ++state.modelLoadId;
         var prev = (e.model.value || '').trim();
@@ -452,7 +1425,7 @@ function handleChatPage() {
         var authKey = key ? ('k:' + key) : 'anon';
         if (key) headers.Authorization = 'Bearer ' + key;
         e.refreshModels.disabled = true;
-        e.refreshModels.textContent = '加载中...';
+        e.refreshModels.textContent = t('refreshModelsLoading');
         state.modelLoading = true;
         syncSendEnabled();
         syncRetryEnabled();
@@ -463,9 +1436,9 @@ function handleChatPage() {
         e.logToggle.disabled = true;
         e.clearLogs.disabled = true;
         e.videoUrl.disabled = true;
-        e.downloadVideo.disabled = true;
+        e.clearVideo.disabled = true;
         try {
-          st('正在加载模型列表...', 'ok');
+          st(t('loadingModels'), 'ok');
           var resp = await fetch(apiUrl('/v1/models'), { headers: headers });
           if (reqId !== state.modelLoadId) return;
           if (!resp.ok) {
@@ -485,15 +1458,17 @@ function handleChatPage() {
             op.textContent = ids[i];
             e.model.appendChild(op);
           }
+
           var authChanged = state.lastModelAuthKey !== null && state.lastModelAuthKey !== authKey;
           if (!authChanged && latestSelected && ids.indexOf(latestSelected) >= 0) e.model.value = latestSelected;
           else if (!authChanged && prev && ids.indexOf(prev) >= 0) e.model.value = prev;
           else if (!authChanged && preferred && ids.indexOf(preferred) >= 0) e.model.value = preferred;
           else e.model.value = ids[0];
+
           state.lastModelAuthKey = authKey;
           state.preferredModel = e.model.value;
           save();
-          st('模型列表已更新（' + ids.length + '）', 'ok');
+          st(tf('modelsUpdated', { n: ids.length }), 'ok');
         } catch (err) {
           if (reqId !== state.modelLoadId) return;
           e.model.innerHTML = '<option value="qwen3.5-plus">qwen3.5-plus</option>';
@@ -501,11 +1476,11 @@ function handleChatPage() {
           state.lastModelAuthKey = authKey;
           state.preferredModel = e.model.value;
           save();
-          st(err && err.message ? err.message : '加载模型失败，已回退默认模型。', 'err');
+          st(err && err.message ? err.message : t('modelsLoadFailedFallback'), 'err');
         } finally {
           if (reqId === state.modelLoadId) {
             state.modelLoading = false;
-            e.refreshModels.textContent = '刷新模型';
+            e.refreshModels.textContent = t('refreshModels');
             e.refreshModels.disabled = !!state.sending;
             syncSendEnabled();
             syncRetryEnabled();
@@ -516,18 +1491,47 @@ function handleChatPage() {
             e.logToggle.disabled = !!state.sending;
             e.clearLogs.disabled = !!state.sending;
             e.videoUrl.disabled = !!state.sending;
-            e.downloadVideo.disabled = !!state.sending;
+            e.clearVideo.disabled = !!state.sending;
           }
         }
       }
-      function isResendContentReplayable(content) { if (!Array.isArray(content)) return true; for (var i = 0; i < content.length; i++) { var part = content[i] || {}; var type = part.type || ''; if (type === 'input_file' && typeof part.file_data !== 'string') return false; if (type === 'input_image' && typeof part.image_url !== 'string') return false; if (type === 'input_video' && typeof part.video_url !== 'string' && typeof part.file_data !== 'string') return false; if (type === 'input_audio' && typeof part.audio_url !== 'string' && typeof part.file_data !== 'string') return false; } return true; }
-      function resendFromIndex(idx) { if (state.sending || state.modelLoading) { st(state.sending ? '请求进行中，请稍候重试。' : '模型列表加载中，请稍候重发。', 'err'); return; } var item = state.hist[idx]; if (!item || item.role !== 'user' || (typeof item.content !== 'string' && !Array.isArray(item.content))) { st('仅支持重发用户消息。', 'err'); return; } var replayable = isResendContentReplayable(item.content); var summarized = summarizeMessageContent(item.content).trim(); if (!summarized) summarized = '[附件消息]'; var resendContent = replayable ? item.content : summarized; e.prompt.value = summarizeMessageContent(resendContent) || '[附件消息]'; if (!replayable) st('历史附件已简化，已回退为文本重发。', 'ok'); send(resendContent, true, idx); }
+      function isResendContentReplayable(content) {
+        if (!Array.isArray(content)) return true;
+        for (var i = 0; i < content.length; i++) {
+          var part = content[i] || {};
+          var type = part.type || '';
+          if (type === 'input_file' && typeof part.file_data !== 'string') return false;
+          if (type === 'input_image' && typeof part.image_url !== 'string') return false;
+          if (type === 'input_video' && typeof part.video_url !== 'string' && typeof part.file_data !== 'string') return false;
+          if (type === 'input_audio' && typeof part.audio_url !== 'string' && typeof part.file_data !== 'string') return false;
+        }
+        return true;
+      }
+      function resendFromIndex(idx) {
+        if (state.sending || state.modelLoading) {
+          st(state.sending ? t('busyNoDoubleSend') : t('resendWait'), 'err');
+          return;
+        }
+        var item = state.hist[idx];
+        if (!item || item.role !== 'user' || (typeof item.content !== 'string' && !Array.isArray(item.content))) {
+          st(t('onlyResendUser'), 'err');
+          return;
+        }
+        var replayable = isResendContentReplayable(item.content);
+        var summarized = summarizeMessageContent(item.content).trim();
+        if (!summarized) summarized = t('attachMsg');
+        var resendContent = replayable ? item.content : summarized;
+        e.prompt.value = summarizeMessageContent(resendContent) || t('attachMsg');
+        if (!replayable) st(t('historySimplified'), 'ok');
+        send(resendContent, true, idx);
+      }
       async function send(forceText, fromResend, replayFromIndex) {
         if (state.sending) return;
         if (state.modelLoading) {
-          st('模型列表加载中，请稍候发送。', 'err');
+          st(t('modelsLoadingWaitSend'), 'err');
           return;
         }
+
         var text = '';
         var filesForSend = fromResend ? [] : state.files;
         var userMessageContent;
@@ -537,56 +1541,174 @@ function handleChatPage() {
         } else {
           text = (typeof forceText === 'string' ? forceText : (e.prompt.value || '')).trim();
           if (!text && filesForSend.length === 0) {
-            st('请输入内容或选择附件。', 'err');
+            st(t('inputOrFileRequired'), 'err');
             return;
           }
         }
+
         var model = (e.model.value || '').trim() || 'qwen3.5-plus';
         var key = (e.apiKey.value || '').trim();
-        if (!userMessageContent) {
-          var content;
+        
+        var imageGenMode = e.imageGenMode.value;
+        if (imageGenMode === 'image') {
+          var imageSize = e.imageSize.value;
+          var imageCount = parseInt(e.imageCount.value, 10) || 1;
+          
+          msg('user', text, state.hist.length);
+          var aMsg = msg('assistant', '');
+          
+          state.sending = true;
+          state.ac = new AbortController();
+          busy(true);
+          st('正在生成图片...', 'ok');
+          
           try {
-            st('正在处理附件...', 'ok');
-            content = await buildContent(text, filesForSend);
+            var h = { 'Content-Type': 'application/json' };
+            if (key) h.Authorization = 'Bearer ' + key;
+            
+            var endpoint = apiUrl('/v1/images/generations');
+            var reqBody = { 
+              model: model, 
+              prompt: text, 
+              n: imageCount, 
+              size: imageSize,
+              response_format: 'url'
+            };
+            
+            var resp = await fetch(endpoint, {
+              method: 'POST',
+              headers: h,
+              body: JSON.stringify(reqBody),
+              signal: state.ac.signal
+            });
+            
+            if (!resp.ok) {
+              var apiErr = await readErrorPayload(resp);
+              throw new Error(emsg(resp.status, apiErr.txt, apiErr.json));
+            }
+            
+            var data = await resp.json();
+            var imageUrls = (data.data || []).map(function(item) { return item.url; });
+            
+            var resultText = '图片生成完成！点击图片可在新窗口打开。';
+            if (aMsg && aMsg.setRaw) aMsg.setRaw(resultText, imageUrls);
+            
+            e.messages.scrollTop = e.messages.scrollHeight;
+            state.hist.push({ role: 'user', content: text });
+            state.hist.push({ role: 'assistant', content: resultText, imageUrls: imageUrls });
+            if (state.hist.length > MAX_HISTORY) state.hist = state.hist.slice(-MAX_HISTORY);
+            save();
+            e.prompt.value = '';
+            attRow();
+            st('图片生成完成！', 'ok');
+            return;
           } catch (err) {
-            st(err && err.message || '附件处理失败', 'err');
+            if (err && err.name === 'AbortError') {
+              st(t('aborted'), 'err');
+              if (aMsg && aMsg.setRaw) aMsg.setRaw(t('abortedTag'));
+            } else {
+              var m = (err && err.message) || t('requestFailed');
+              st(m, 'err');
+              if (aMsg && aMsg.setRaw) aMsg.setRaw(t('errorTag') + ' ' + m);
+            }
+            state.hist.push({ role: 'user', content: text });
+            state.hist.push({ role: 'assistant', content: (err && err.name === 'AbortError') ? t('abortedTag') : (t('errorTag') + ' ' + t('requestFailed')) });
+            if (state.hist.length > MAX_HISTORY) state.hist = state.hist.slice(-MAX_HISTORY);
+            save();
+          } finally {
+            state.ac = null;
+            state.sending = false;
+            busy(false);
+            e.prompt.focus();
+          }
+          return;
+        }
+
+        var model = (e.model.value || '').trim() || 'qwen3.5-plus';
+        var key = (e.apiKey.value || '').trim();
+
+        var videoUrl = (e.videoUrl.value || '').trim();
+        if (videoUrl) {
+          var normalizedVideoUrl = normalizeVideoUrl(videoUrl);
+          if (normalizedVideoUrl === 'INVALID') {
+            st(t('videoUrlInvalid'), 'err');
+            e.videoUrl.focus();
             return;
           }
-          userMessageContent = (content.length <= 1 && text) ? text : content;
+          if (normalizedVideoUrl !== videoUrl) e.videoUrl.value = normalizedVideoUrl;
+          if (state.videoUrl !== normalizedVideoUrl) {
+            state.videoUrl = normalizedVideoUrl;
+            save();
+          }
+          videoUrl = normalizedVideoUrl;
         }
+
+        if (!userMessageContent) {
+          try {
+            st(t('processingAttachments'), 'ok');
+            var content = await buildContent(text, filesForSend);
+            userMessageContent = (content.length <= 1 && text) ? text : content;
+          } catch (err) {
+            st((err && err.message) || t('attachmentsFailed'), 'err');
+            return;
+          }
+        }
+
         if (typeof replayFromIndex === 'number' && replayFromIndex >= 0) {
           state.hist = state.hist.slice(0, replayFromIndex);
           save();
           rHist();
         }
-        msg('user', summarizeMessageContent(userMessageContent) || '[附件消息]', state.hist.length);
-        var aEl = msg('assistant', '');
+
+        msg('user', summarizeMessageContent(userMessageContent) || t('attachMsg'), state.hist.length);
+        var aMsg = msg('assistant', '');
+
         var payload = state.hist.slice();
         payload.push({ role: 'user', content: userMessageContent });
+
         state.sending = true;
         state.ac = new AbortController();
         busy(true);
-        var useLogApi = state.showLogs;
-        st(useLogApi ? '请求中（带日志流式）...' : '请求中（流式）...', 'ok');
+
+        var wantVideo = !!videoUrl;
+        var wantLogs = !!state.showLogs;
+        var useLogEndpoint = wantLogs || wantVideo;
+        if (wantVideo && wantLogs) st(t('requestingVideoLogs'), 'ok');
+        else if (wantVideo) st(t('requestingVideo'), 'ok');
+        else if (wantLogs) st(t('requestingLogs'), 'ok');
+        else st(t('requestingChat'), 'ok');
+
         try {
           var h = { 'Content-Type': 'application/json' };
           if (key) h.Authorization = 'Bearer ' + key;
-          var endpoint = useLogApi ? apiUrl('/v1/chat/completions/log') : apiUrl('/v1/chat/completions');
-          var videoUrl = (e.videoUrl.value || state.videoUrl || '').trim();
+
+          var endpoint = useLogEndpoint ? apiUrl('/v1/chat/completions/log') : apiUrl('/v1/chat/completions');
           var reqBody = { model: model, stream: true, messages: payload };
-          if (useLogApi && videoUrl) reqBody.video_url = videoUrl;
-          var resp = await fetch(endpoint, { method: 'POST', headers: h, body: JSON.stringify(reqBody), signal: state.ac.signal });
+          if (wantVideo) reqBody.video_url = videoUrl;
+
+          var resp = await fetch(endpoint, {
+            method: 'POST',
+            headers: h,
+            body: JSON.stringify(reqBody),
+            signal: state.ac.signal
+          });
+
           if (!resp.ok) {
             var apiErr = await readErrorPayload(resp);
             throw new Error(emsg(resp.status, apiErr.txt, apiErr.json));
           }
+
           var contentType = String(resp.headers.get('content-type') || '').toLowerCase();
           var isEventStream = contentType.indexOf('text/event-stream') >= 0;
+
           if (!isEventStream) {
             var plain = await readErrorPayload(resp);
-            if (plain.json && plain.json.error) throw new Error(emsg(resp.status, plain.txt, plain.json));
-            var plainOutput = (extractAssistantText(plain.json, plain.txt) || '').trim() || '（空响应）';
-            aEl.textContent = plainOutput;
+            if (plain.json && plain.json.error) {
+              throw new Error(emsg(resp.status, plain.txt, plain.json));
+            }
+            var directText = extractAssistantText(plain.json, plain.txt).trim();
+            var plainOutput = directText || t('emptyAssistant');
+            if (aMsg && aMsg.setRaw) aMsg.setRaw(plainOutput);
             e.messages.scrollTop = e.messages.scrollHeight;
             state.hist.push({ role: 'user', content: userMessageContent });
             state.hist.push({ role: 'assistant', content: plainOutput });
@@ -595,32 +1717,38 @@ function handleChatPage() {
             e.prompt.value = '';
             state.files = [];
             attRow();
-            st('完成。', 'ok');
+            st(t('done'), 'ok');
             return;
           }
+
           if (!resp.body) throw new Error('浏览器不支持流式响应。');
+
           var reader = resp.body.getReader();
           var decoder = new TextDecoder();
           var sseState = createSSEState();
           var outRef = { value: '' };
           var gotDone = false;
           var streamError = '';
+
           while (!gotDone) {
             var ch = await reader.read();
             var done = !!ch.done;
             var chunkText = decoder.decode(ch.value || new Uint8Array(), { stream: !done });
-            var parsed = parseSSELines(sseState, chunkText, done, useLogApi, outRef, aEl);
+            var parsed = parseSSELines(sseState, chunkText, done, wantLogs, outRef, aMsg);
             if (parsed.apiError) {
               streamError = parsed.apiError;
               gotDone = true;
             }
             if (parsed.reachedDone || done) gotDone = true;
           }
-          if (streamError) throw new Error(streamError);
-          if (!outRef.value) {
-            outRef.value = '（空响应）';
-            aEl.textContent = outRef.value;
+
+          if (streamError) {
+            throw new Error(streamError);
           }
+
+          if (!outRef.value) outRef.value = t('emptyAssistant');
+          if (aMsg && aMsg.setRaw) aMsg.setRaw(outRef.value);
+
           state.hist.push({ role: 'user', content: userMessageContent });
           state.hist.push({ role: 'assistant', content: outRef.value });
           if (state.hist.length > MAX_HISTORY) state.hist = state.hist.slice(-MAX_HISTORY);
@@ -628,22 +1756,24 @@ function handleChatPage() {
           e.prompt.value = '';
           state.files = [];
           attRow();
-          st('完成。', 'ok');
+          st(t('done'), 'ok');
         } catch (err) {
           if (err && err.name === 'AbortError') {
-            st('已中断请求。', 'err');
-            if (!aEl.textContent) aEl.textContent = '[已中断]';
-            else aEl.textContent += '\n\n[已中断]';
+            st(t('aborted'), 'err');
+            var cur = outRef.value || '';
+            outRef.value = cur ? (cur + '\n\n' + t('abortedTag')) : t('abortedTag');
+            if (aMsg && aMsg.setRaw) aMsg.setRaw(outRef.value);
             e.messages.scrollTop = e.messages.scrollHeight;
           } else {
-            var m = err && err.message || '请求失败';
+            var m = (err && err.message) || t('requestFailed');
             st(m, 'err');
-            if (!aEl.textContent) aEl.textContent = '[错误] ' + m;
-            else aEl.textContent += '\n\n[错误] ' + m;
+            var cur2 = outRef.value || '';
+            outRef.value = cur2 ? (cur2 + '\n\n' + t('errorTag') + ' ' + m) : (t('errorTag') + ' ' + m);
+            if (aMsg && aMsg.setRaw) aMsg.setRaw(outRef.value);
             e.messages.scrollTop = e.messages.scrollHeight;
           }
           state.hist.push({ role: 'user', content: userMessageContent });
-          state.hist.push({ role: 'assistant', content: aEl.textContent || ((err && err.name === 'AbortError') ? '[已中断]' : '[错误] 请求失败') });
+          state.hist.push({ role: 'assistant', content: outRef.value || ((err && err.name === 'AbortError') ? t('abortedTag') : (t('errorTag') + ' ' + t('requestFailed'))) });
           if (state.hist.length > MAX_HISTORY) state.hist = state.hist.slice(-MAX_HISTORY);
           save();
         } finally {
@@ -653,6 +1783,91 @@ function handleChatPage() {
           e.prompt.focus();
         }
       }
+
+      function setLogPanelVisible(visible) {
+        state.showLogs = !!visible;
+        if (state.showLogs) {
+          if (e.shell) e.shell.classList.add('has-logs');
+          e.logPanel.classList.add('visible');
+          e.logToggle.textContent = '隐藏日志';
+          e.logToggle.classList.add('active');
+          e.logs.scrollTop = e.logs.scrollHeight;
+        } else {
+          if (e.shell) e.shell.classList.remove('has-logs');
+          e.logPanel.classList.remove('visible');
+          e.logToggle.textContent = '显示日志';
+          e.logToggle.classList.remove('active');
+        }
+      }
+
+      // events
+      if (e.langToggle) {
+        e.langToggle.onclick = function () {
+          setLang(state.lang === 'en' ? 'zh' : 'en');
+        };
+      }
+      e.logToggle.onclick = function () {
+        setLogPanelVisible(!state.showLogs);
+        save();
+      };
+      e.clearLogs.onclick = function () {
+        if (state.sending || state.modelLoading) {
+          st(state.sending ? t('logsClearBusy') : t('logsClearBusyModels'), 'err');
+          return;
+        }
+        var hadLogs = e.logs.childNodes.length > 0;
+        e.logs.innerHTML = '';
+        st(hadLogs ? t('logsCleared') : t('logsAlreadyEmpty'), 'ok');
+      };
+      function normalizeVideoUrl(v) {
+        var url = (v || '').trim();
+        if (!url) return '';
+        if (!/^https?:\/\//i.test(url)) return 'INVALID';
+        return url;
+      }
+      function syncVideoUrlFromInput(showHint) {
+        var normalized = normalizeVideoUrl(e.videoUrl.value || '');
+        if (normalized === 'INVALID') {
+          st(t('videoUrlInvalid'), 'err');
+          return false;
+        }
+        state.videoUrl = normalized;
+        e.videoUrl.value = normalized;
+        save();
+        if (showHint) {
+          if (normalized) st(t('videoSet'), 'ok');
+          else st(t('videoCleared'), 'ok');
+        }
+        return true;
+      }
+      e.clearVideo.onclick = function () {
+        if (state.sending || state.modelLoading) {
+          st(state.sending ? t('busyNoDoubleSend') : t('modelsLoadingWait'), 'err');
+          return;
+        }
+        e.videoUrl.value = '';
+        syncVideoUrlFromInput(true);
+        if (state.showLogs) addLog({ event: 'video.url.cleared', timestamp: Date.now() });
+      };
+      e.videoUrl.addEventListener('blur', function () {
+        if (state.sending || state.modelLoading) return;
+        syncVideoUrlFromInput(false);
+      });
+      e.videoUrl.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Escape') {
+          if (state.sending || state.modelLoading) return;
+          ev.preventDefault();
+          e.videoUrl.value = state.videoUrl || '';
+          st(t('videoRestored'), 'ok');
+          return;
+        }
+        if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) {
+          ev.preventDefault();
+          if (state.sending || state.modelLoading) return;
+          syncVideoUrlFromInput(true);
+          e.prompt.focus();
+        }
+      });
       e.files.onchange = function () {
         if (state.sending || state.modelLoading) {
           st(state.sending ? '请求进行中，暂不能修改附件。' : '模型列表加载中，请稍候再修改附件。', 'err');
@@ -664,40 +1879,61 @@ function handleChatPage() {
         var skipped = 0;
         for (var i = 0; i < fs.length; i++) {
           if (state.files.length >= MAX) {
-            st('最多允许 ' + MAX + ' 个附件。', 'err');
+            st(tf('maxAttachments', { n: MAX }), 'err');
             break;
           }
           var f = fs[i];
           if (f.size > MAX_SIZE) {
-            st('文件过大：' + f.name + '（上限 ' + bfmt(MAX_SIZE) + '）', 'err');
+            st(tf('fileTooLarge', { name: f.name, max: bfmt(MAX_SIZE) }), 'err');
             skipped++;
             continue;
           }
           var exists = false;
           for (var j = 0; j < state.files.length; j++) {
-            var x = state.files[j];
-            if (x && x.name === f.name && x.size === f.size && x.lastModified === f.lastModified) { exists = true; break; }
+            var existing = state.files[j];
+            if (existing && existing.name === f.name && existing.size === f.size && existing.lastModified === f.lastModified) {
+              exists = true;
+              break;
+            }
           }
-          if (exists) { skipped++; continue; }
+          if (exists) {
+            skipped++;
+            continue;
+          }
           state.files.push(f);
           added++;
         }
         e.files.value = '';
         attRow();
-        if (added > 0 && skipped > 0) st('已添加 ' + added + ' 个附件，跳过 ' + skipped + ' 个重复/无效附件。', 'ok');
-        else if (added > 0) st('已选择 ' + state.files.length + ' 个附件。', 'ok');
-        else if (skipped > 0) st('未新增附件（均为重复或无效文件）。', 'err');
+        if (added > 0 && skipped > 0) st(tf('addedAndSkipped', { added: added, skipped: skipped }), 'ok');
+        else if (added > 0) st(tf('addedAttachments', { n: state.files.length }), 'ok');
+        else if (skipped > 0) st(t('addedNoneSkipped'), 'err');
       };
-      e.send.onclick = function () { if (state.sending) { st('请求进行中，请勿重复发送。', 'err'); return; } if (!canSendNow()) return; if (state.modelLoading) { st('模型列表加载中，请稍候发送。', 'err'); return; } send(); };
-      e.stop.onclick = function () { if (!state.ac) { st('当前没有进行中的请求。', 'err'); return; } state.ac.abort(); e.stop.disabled = true; e.stop.textContent = '中断中...'; st('正在中断请求...', 'ok'); };
-      function setLogPanelVisible(visible) { state.showLogs = !!visible; if (state.showLogs) { e.logPanel.classList.add('visible'); e.logToggle.textContent = '隐藏日志'; e.logToggle.classList.add('active'); e.logs.scrollTop = e.logs.scrollHeight; } else { e.logPanel.classList.remove('visible'); e.logToggle.textContent = '显示日志'; e.logToggle.classList.remove('active'); } }
-      e.logToggle.onclick = function () { if (state.sending || state.modelLoading) { st(state.sending ? '请求进行中，暂不能切换日志面板。' : '模型列表加载中，请稍候切换日志面板。', 'err'); return; } setLogPanelVisible(!state.showLogs); save(); };
-      e.clearLogs.onclick = function () { if (state.sending || state.modelLoading) { st(state.sending ? '请求进行中，暂不能清空日志。' : '模型列表加载中，请稍候清空日志。', 'err'); return; } var hadLogs = e.logs.childNodes.length > 0; e.logs.innerHTML = ''; st(hadLogs ? '日志已清空。' : '日志已为空。', 'ok'); };
-      e.downloadVideo.onclick = function () { if (state.sending || state.modelLoading) { st(state.sending ? '请求进行中，暂不能保存视频链接。' : '模型列表加载中，请稍候保存视频链接。', 'err'); return; } var url = (e.videoUrl.value || '').trim(); if (!url) { if (state.videoUrl) { state.videoUrl = ''; save(); addLog({ event: 'video.download.clear', timestamp: Date.now() }); st('已清除已保存的视频链接。', 'ok'); } else { st('当前未保存视频链接。', 'ok'); } return; } if (!/^https?:\/\//i.test(url)) { st('视频链接需以 http:// 或 https:// 开头。', 'err'); return; } state.videoUrl = url; save(); addLog({ event: 'video.download.set', timestamp: Date.now(), videoUrl: url }); st('视频链接已保存，将在日志模式请求中生效。', 'ok'); };
-      e.videoUrl.onkeydown = function (ev) { if (ev.key === 'Escape') { ev.preventDefault(); e.videoUrl.value = state.videoUrl || ''; st('已恢复已保存的视频链接。', 'ok'); return; } if (ev.key === 'Enter') { ev.preventDefault(); e.downloadVideo.click(); } };
+      e.send.onclick = function () {
+        if (state.sending) {
+          st(t('busyNoDoubleSend'), 'err');
+          return;
+        }
+        if (!canSendNow()) return;
+        if (state.modelLoading) {
+          st(t('modelsLoadingWaitSend'), 'err');
+          return;
+        }
+        send();
+      };
+      e.stop.onclick = function () {
+        if (!state.ac) {
+          st(t('noActiveRequest'), 'err');
+          return;
+        }
+        state.ac.abort();
+        e.stop.disabled = true;
+        e.stop.textContent = t('stopping');
+        st(t('abortInProgress'), 'ok');
+      };
       e.clear.onclick = function () {
         if (state.sending || state.modelLoading) {
-          st(state.sending ? '请求进行中，暂不能清空会话。' : '模型列表加载中，请稍候清空会话。', 'err');
+          st(state.sending ? t('clearChatBusy') : t('clearChatBusyModels'), 'err');
           return;
         }
         var hadSession = state.hist.length > 0 || state.files.length > 0 || !!(e.prompt.value || '').trim();
@@ -708,25 +1944,81 @@ function handleChatPage() {
         rHist();
         e.prompt.value = '';
         syncSendEnabled();
-        st(hadSession ? '会话已清空。' : '会话已为空。', 'ok');
+        st(hadSession ? t('chatCleared') : t('chatAlreadyEmpty'), 'ok');
         e.prompt.focus();
       };
-      e.refreshModels.onclick = function () { if (state.sending) { st('请求进行中，暂不能刷新模型。', 'err'); return; } if (state.modelLoading) { st('模型列表加载中，请稍候。', 'ok'); return; } loadModels(); };
-      e.apiKey.addEventListener('blur', function () { if (state.sending || state.modelLoading) return; var key = (e.apiKey.value || '').trim(); var authKey = key ? ('k:' + key) : 'anon'; if (state.lastModelAuthKey === authKey) return; loadModels(); });
-      e.model.addEventListener('change', function () { state.preferredModel = (e.model.value || '').trim(); save(); });
-      e.apiKey.addEventListener('keydown', function (ev) { if (ev.key === 'Enter' && !ev.isComposing) { ev.preventDefault(); if (state.sending || state.modelLoading) return; var key = (e.apiKey.value || '').trim(); var authKey = key ? ('k:' + key) : 'anon'; if (state.lastModelAuthKey === authKey) return; loadModels(); } });
+      e.refreshModels.onclick = function () {
+        if (state.sending) {
+          st(t('refreshModelsBusy'), 'err');
+          return;
+        }
+        if (state.modelLoading) {
+          st(t('modelsLoadingWait'), 'ok');
+          return;
+        }
+        loadModels();
+      };
+      e.apiKey.addEventListener('blur', function () {
+        if (state.sending || state.modelLoading) return;
+        var key = (e.apiKey.value || '').trim();
+        var authKey = key ? ('k:' + key) : 'anon';
+        if (state.lastModelAuthKey === authKey) return;
+        loadModels();
+      });
+      e.model.addEventListener('change', function () {
+        state.preferredModel = (e.model.value || '').trim();
+        save();
+      });
+      e.apiKey.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter' && !ev.isComposing) {
+          ev.preventDefault();
+          if (state.sending || state.modelLoading) return;
+          var key = (e.apiKey.value || '').trim();
+          var authKey = key ? ('k:' + key) : 'anon';
+          if (state.lastModelAuthKey === authKey) return;
+          loadModels();
+        }
+      });
+      e.prompt.onkeydown = function (ev) {
+        if (ev.key === 'Escape') {
+          if (state.ac) {
+            ev.preventDefault();
+            state.ac.abort();
+            e.stop.disabled = true;
+            e.stop.textContent = t('stopping');
+            st(t('abortInProgress'), 'ok');
+          }
+          return;
+        }
+        if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) {
+          ev.preventDefault();
+          if (state.sending) {
+            st(t('busyNoDoubleSend'), 'err');
+            return;
+          }
+          if (!canSendNow()) return;
+          if (state.modelLoading) {
+            st(t('modelsLoadingWaitSend'), 'err');
+            return;
+          }
+          send();
+        }
+      };
       e.prompt.addEventListener('input', syncSendEnabled);
-      e.prompt.onkeydown = function (ev) { if (ev.key === 'Escape') { if (state.ac) { ev.preventDefault(); state.ac.abort(); e.stop.disabled = true; e.stop.textContent = '中断中...'; st('正在中断请求...', 'ok'); } return; } if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); if (state.sending) { st('请求进行中，请勿重复发送。', 'err'); return; } if (!canSendNow()) return; if (state.modelLoading) { st('模型列表加载中，请稍候发送。', 'err'); return; } send(); } };
+
       load();
+      state.lang = getPreferredLang();
       rHist();
       setLogPanelVisible(state.showLogs);
       syncSendEnabled();
-      st('就绪。', 'ok');
+      applyLangToUI();
+      st(t('ready'), 'ok');
       loadModels();
     })();
   </script>
 </body>
-</html>`;
+</html>
+`;
   return new Response(html, { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Access-Control-Allow-Origin': '*' } });
 }
 
